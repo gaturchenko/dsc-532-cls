@@ -1,0 +1,2997 @@
+---
+title: "Classification_Project"
+author: "Evi Zaou"
+date: "2023-03-05"
+output: html_document
+editor_options: 
+  markdown: 
+    wrap: sentence
+---
+
+# 1. Data Description
+
+```{r setup code,echo=FALSE,include=FALSE}
+# Setup code for when we run the file to clear the environment, plots and console
+graphics.off() # Clear plots
+rm(list = ls()) # Clear workspace
+```
+
+
+```{r install_packages,echo=FALSE,warning=FALSE}
+
+# install.packages('utils')
+# install.packages('dplyr')
+# install.packages('tidyverse')
+# install.packages('gridExtra')
+# install.packages('psych')
+# install.packages('moments')
+# install.packages('caret') #for feature importance
+# install.packages('dplyr')
+# install.packages('MASS')
+# install.packages('rpart')
+# install.packages('randomForest')
+# install.packages('gbm')
+# install.packages('e1071')
+# install.packages('class')
+# install.packages('caret')
+# install.packages('MLmetrics') 
+# install.packages('ranger') 
+# install.packages('kernlab') 
+# install.packages('tornado')
+# install.packages( "BeSS" )
+# install.packages( "naivebayes" )
+# install.packages( "polycor" )
+# install.packages( "h2o" )
+```
+
+```{r import libraries,echo=FALSE, warning=FALSE, message=FALSE}
+library(utils)
+library(dplyr)
+library(tidyverse)
+library(gridExtra)
+library(psych)
+library(moments)
+library(caret)
+library(dplyr)
+library(MASS)
+library(rpart)
+library(randomForest)
+library(gbm)
+library(e1071)
+library(class)
+library(caret)
+library(MLmetrics) 
+library(ranger) 
+library(kernlab) 
+library(tornado)
+library(BeSS)
+library(naivebayes)
+library(polycor)
+library(h2o)
+library(fastDummies)
+
+```
+
+**Dataset Summary and Feature Description:**
+
+```{r import dataset,echo=FALSE}
+df<-read.csv("superstore_data.csv")
+df_original<-df
+str(df)
+```
+
+The dataset consists of 2240 observations and 20 independent variables.
+The target variable is **Response** that indicates whether the customer has positively responded to the supermarket marketing campaign or not.
+From a first look, we do not have any variable type that does not agree with its definition.
+
+**Duplicated values:**
+
+We proceed with the investigation of duplicated values.In order to do that, we should search if we have any duplicated ids or records.
+
+```{r duplicates check,echo=FALSE}
+cat("Are there any duplicated ids?",any(duplicated(df$Id)),"\n")
+cat("Are there any duplicates if we exclude the id column?",any(duplicated(df[,names(df)!="Id"])))
+
+```
+
+```{r}
+duplicated_records<-df[duplicated(df[,names(df)!="Id"]),]
+```
+
+```{r}
+nrow(duplicated_records)/nrow(df)
+```
+
+As we can see from the above dataset, approximately 1% of our dataset refer to duplicated records.
+As we have a variety of details for each customer (income,year of birth, date of becoming a customer), we assume that we cannot have 2 different customers with exactly the same details.
+Therefore, we proceed by removing any duplicated records from our dataset.
+
+```{r}
+df<-unique(df[,names(df)!="Id"])
+```
+
+**Changing the type of Date column:**
+
+From the summary description that was presented before, we can see that date variable has type character.
+Therefore, we are going to transform it to date type and check whether any errors will occur.
+
+```{r date format,echo=FALSE}
+df$Dt_Customer<-as.Date(df$Dt_Customer,format="%m/%d/%Y")
+cat("Earliest date available:",format(min(df$Dt_Customer)),"\nLatest date available:",format(max(df$Dt_Customer)),"\n")
+cat("Number of NAs in Dt Customer:",sum(is.na(df$Dt_Customer)))
+```
+
+**Checking for inconsistencies in year of birth variable:**
+
+As we can see the earliest date of available data is 08/01/2012.
+As it is very rare to have an elder people of 100 years old, we decided to remove any records that refer to customer with age more that 100 (we will consider this kind of records as erroneous).
+
+```{r year birth,echo=FALSE}
+cat("Earliest Year of Birth:",min(df$Year_Birth),"\nLatest Year of Birth:",max(df$Year_Birth))
+cat("\nErroneous values in Year of Birth column:",nrow(df[df$Year_Birth<1912,]))
+df=df[df$Year_Birth>=1912,]
+```
+
+**Checking for inconsistencies in Education variable:**
+
+We observe that we have two different values that refer to the same level of education (2n Cycle and Education).
+Therefore, we are going to replace the values of the 2n Cycle with Masters.
+
+```{r education,echo=FALSE}
+cat("Initial education categories:",unique(df$Education))
+df[df$Education=="2n Cycle",]$Education="Master"
+cat("\nAfter modification education categories:",unique(df$Education))
+```
+
+**Checking for inconsistencies in Marital status variable:**
+
+We observe that we have some erroneous values like Yolo and Absurd.
+For now, we will replace these values with a new category 'Other' and we will decide in a later stage how we are going to treat them.
+Moreover, we observe that we have two values that refer to the same marital status (Single and Alone) and thus we will replace Alone with Single status.
+
+```{r marital_status,echo=FALSE}
+marital_categ <- df %>% group_by(Marital_Status) %>% summarise(Count_Obs=n())
+marital_categ
+df[df$Marital_Status=="Alone",]$Marital_Status="Single"
+df[df$Marital_Status=="YOLO" | df$Marital_Status=="Absurd",]$Marital_Status="Other"
+
+rm(marital_categ)
+```
+
+**Helper Functions:**
+
+Below we define some functions that will help us through the Exploratory Analysis and Modelling phase.
+
+```{r define statistics function descr_stat,echo=FALSE}
+
+descr_stat <- function(features,df_all){ 
+  
+  if(!all(features %in% names(df_all))){
+    stop("These features do not exist in the imported dataframe")
+  }
+  
+  temp_df <- data.frame(matrix(NA,ncol=5,nrow=length(features)))
+  names(temp_df) <- c('Mean','Variance','Skewness','Kurtosis','Median')
+  rownames(temp_df) <- features
+  
+  for (temp in 1:nrow(temp_df)){
+    temp_df$Mean[temp] <- round(mean(df_all[[rownames(temp_df)[temp]]]),3) 
+    temp_df$Variance[temp] <- round(var(df_all[[rownames(temp_df)[temp]]]),3) 
+    temp_df$Skewness[temp] <- round(skewness(df_all[[rownames(temp_df)[temp]]]),3) 
+    temp_df$Kurtosis[temp] <- round(kurtosis(df_all[[rownames(temp_df)[temp]]]),3) 
+    temp_df$Median[temp] <- round(median(df_all[[rownames(temp_df)[temp]]]),3)
+  } 
+  return(temp_df)
+}
+
+```
+
+```{r define function outliers,warning=FALSE,echo=FALSE}
+
+out_feature <- function(feature,df_in){
+  
+  if (!all(feature %in% names(df_in))){
+      stop("Feature does not exist in the imported dataframe")
+  }
+ 
+  whisk<-boxplot(df_in[[feature]],plot=FALSE)$stats[c(1,5)]
+  
+  out_df<-df_in[which((df_in[[feature]] < whisk[1]) | (df_in[[feature]] > whisk[2])),]
+  return(out_df)
+}
+```
+
+```{r define Class_Metrics,echo=FALSE}
+Class_Metrics <- function(table_imp_vec, name_vec) {
+  # Initialize an empty data frame to store the metrics
+  metrics_df <- data.frame(matrix(NA, ncol = 6, nrow = length(table_imp_vec)))
+  names(metrics_df) <- c("Name", "Accuracy", "Recall", "Precision", "Specificity", "F1_score")
+  
+  # Loop through each confusion matrix in the vector and compute the metrics
+  for (i in seq_along(table_imp_vec)) {
+    table_imp <- table_imp_vec[[i]]
+    if (nrow(table_imp) != 2 || ncol(table_imp) != 2) {
+      stop("Each imported table has to be 2x2")
+    }
+    TN <- table_imp[1, 1]
+    TP <- table_imp[2, 2]
+    FP <- table_imp[2, 1]
+    FN <- table_imp[1, 2]
+    metrics_df[i, "Name"] <- name_vec[[i]]
+    metrics_df[i, "Accuracy"] <- round((TP + TN) / (TN + TP + FP + FN), 3)
+    metrics_df[i, "Recall"] <- round(TP / (TP + FN), 3)
+    metrics_df[i, "Precision"] <- round(TP / (TP + FP), 3)
+    metrics_df[i, "Specificity"] <- round(TN / (TN + FP), 3)
+    metrics_df[i, "F1_score"] <- round(2 * (metrics_df[i, "Precision"] * metrics_df[i, "Recall"]) / (metrics_df[i, "Precision"] +       metrics_df[i, "Recall"]), 3)
+  }
+  return(metrics_df)
+}
+```
+
+```{r confusion_matrix_1,echo=FALSE}
+plot_conf_matrix <- function(temp) {
+  TClass <- factor(c(0, 0, 1, 1))
+  PClass <- factor(c(0, 1, 0, 1))
+  Y <- as.numeric(temp)
+  conf_df <- data.frame(TClass, PClass, Y)
+
+  ggplot(data = conf_df, mapping = aes(x = TClass, y = PClass)) +
+    geom_tile(aes(fill = Y), colour = "white") +
+    geom_text(aes(label = sprintf("%1.0f", Y)), vjust = 1, size = 6) +
+    scale_fill_gradient(low = "cadetblue3", high = "tan2") +
+    theme_bw() +
+    theme(
+      legend.position = "none",
+      axis.title.x = element_text(size = 14), # Increase x-axis title font size
+      axis.title.y = element_text(size = 14), # Increase y-axis title font size
+      axis.text.x = element_text(size = 12), # Increase x-axis tick font size
+      axis.text.y = element_text(size = 12) # Increase y-axis tick font size
+    )
+}
+```
+
+# 2. Exploratory Data Analysis
+
+## 2.1 Feature exploration
+
+### 2.1.1 Target Variable: 'Response'
+
+**Definition:** Response variable states if the customer responded positively in the last marketing campaign.
+
+**Type:** Binary --\> 0 (No) , 1 (Yes)
+
+```{r}
+df$Response<-as.factor(df$Response)
+
+ggplot(df, aes(x=factor(Response)))+
+  geom_bar(stat="count", width=0.7, fill="cadetblue4")+
+  theme_minimal()+labs(x ="Response", y = "Count of Records")
+
+```
+
+```{r}
+response_count <- df %>% group_by(Response) %>% summarise(Count=n())
+response_count$Perc=round(response_count$Count/nrow(df)*100,2)
+response_count$Perc=paste(response_count$Perc,"%")
+response_count
+```
+
+We observe that we have an imbalanced dataset of class 85:15.
+This will probably be a problem in the modelling phase as the minority class is the class that we are actually interested in.
+We will decide in a later stage how we are going to treat this phenomenon.
+
+### 2.1.2 Year of Birth
+
+**Definition:** Year of Birth of customer
+
+**Type:** Discrete/Nominal Values
+
+**Comments:** Note that we have already some variables that we considered erroneous in section 1.
+
+```{r YoB_1,echo=FALSE}
+ggplot(df, aes(x=Year_Birth, fill=Response)) +geom_histogram(bins=20,col="cadetblue4") +
+  scale_fill_manual(values=c("cadetblue3","tan1"))+labs(x ="Year of Birth", y = "Count of Records")
+```
+
+```{r YoB_2, echo=FALSE}
+summary(df$Year_Birth)
+```
+
+The Year of Birth of our customers ranges from 1940 to 1996, meaning that we have a variety of ages in our customer lists (Range=56).
+As for the IQR, where are the observations between the 1st and 3rd quartile, it is equal to 18, meaning that we have a more limited spread of the middle half of the year of birth distribution.
+Moreover, we observe a slightly different distribution for the year of birth between positive and negative instances of the target variable.
+However, the difference is not "much strong" and thus we do not expect this variable to individually contribute to our model.
+
+### 2.1.3. Complain
+
+**Definition:** Complain indicates whether the customer has complained in the last 2 years
+
+**Type:** Binary --\> 0 (No) , 1 (Yes)
+
+```{r complain_1,echo=FALSE}
+df$Complain=as.factor(df$Complain)
+ggplot(df, aes(x=Complain,fill=Response))+
+  geom_bar(stat="count", width=0.7)+scale_fill_manual(values=c("cadetblue3","tan1"))+
+  theme_minimal()+labs(x ="Complain", y = "Count of Records")
+```
+
+```{r complain_2,echo=FALSE,warning=FALSE}
+complain_df<-df %>% group_by(Complain,Response) %>% 
+  summarize(count = n()) %>%  mutate(pct = count/sum(count))
+complain_df
+rm(complain_df)
+```
+
+We observe that there is no change in the allocation of the classes of our target variable based on the complain value.
+Therefore, we expect that this variable will not contribute to our model.
+
+### 2.1.4. Dt_Customer
+
+**Definition:** The date of customer's enrollment with the company
+
+**Type:** Date
+
+```{r Dt_Customer_1,echo=FALSE}
+cat("Oldest Enrolled date:",format(min(df$Dt_Customer)))
+cat("\nNewest Enrolled date:",format(max(df$Dt_Customer)))
+```
+
+In section 2.2 we will perform further analysis for this specific variable.
+
+### 2.1.5. Education
+
+**Definition:** Level of customer's education
+
+**Type:** Character
+
+**Comments:** Note that we have already modefied some values of this variables in section 1.
+Specifically, 2n Cycle has been replaced with Masters education.
+
+```{r Education_1,echo=FALSE}
+df$Education=as.factor(df$Education)
+ggplot(df, aes(x=Education,fill=Response))+
+  geom_bar(stat="count", width=0.7)+scale_fill_manual(values=c("cadetblue3","tan1"))+
+  theme_minimal()+labs(x ="Education", y = "Count of Records")
+```
+
+```{r Education_2,echo=FALSE,warning=FALSE}
+df_edu <- df %>% group_by(Response,Education) %>% summarize(count = n()) %>%  mutate(pct = count/sum(count))
+
+df_edu
+
+rm(df_edu)
+```
+
+From the above plot and dataframe, we can see that the majority of our responses refer to people that have education level higher than Basic (for both negative and positive instances).
+To identify any significant differences between the two classes distribution, we plot the heat map.
+
+```{r Education_3,echo=FALSE}
+df %>% count(Response, Education) %>% group_by(Response) %>%
+  mutate(prop = n / sum(n)) %>%
+  ggplot(mapping = aes(x = Education, y = Response)) +
+  geom_tile(mapping = aes(fill = prop))
+```
+
+We observe a slightly different distribution between the two classes.
+However, we cannot conlcude if this variable is indeed valuable by its own.
+We should proceed to the bavariate analysis to examine this.
+
+Even if this variable is categorical and has a type of character, we should transform it to a numerical discrete variable.
+We are going to perform ordinal encoding in this case as we have a hierarchy on these observations.
+
+```{r Education_4,echo=FALSE,warning=FALSE}
+df$Education_Num<-0
+df[df$Education=="Basic",]$Education_Num<-1
+df[df$Education=="Graduation",]$Education_Num<-2
+df[df$Education=="Master",]$Education_Num<-3
+df[df$Education=="PhD",]$Education_Num<-4
+```
+
+### 2.1.6. Marital
+
+**Definition:** Marital Status of Customer
+
+**Type:** Character
+
+**Comments:** Note that we have already modefied some values of this variables in section 1.
+Specifically, 'Alone' has been replaced with single, and YOLO and Absurd have been replaced with 'Other'.
+
+```{r Marital_1,echo=FALSE}
+ggplot(df, aes(x=factor(Marital_Status),fill=Response))+
+  geom_bar(stat="count", width=0.7)+scale_fill_manual(values=c("cadetblue3","tan1"))+
+  theme_minimal()+labs(x ="Marital Status", y = "Count of Records")
+```
+
+From a first look, we observe that the majority of our observations refer to married people.
+The 'Other' category that we have created, seems insignificant compared to the other available.
+Therefore, we should remove it as it will probably not provide any useful information.
+
+We proceed by investigating the covariation between Marital Status and Response.
+
+```{r Marital_2,echo=FALSE}
+df %>% count(Response, Marital_Status) %>% group_by(Response) %>%
+  mutate(prop = n / sum(n)) %>%
+  ggplot(mapping = aes(x = Marital_Status, y = Response)) +
+  geom_tile(mapping = aes(fill = prop))
+```
+
+From the above heatmap, we are able to compare the conditional probabilities of the Marital Status observations in condition of each class.
+The distributions between the two classes, sufficiently differentiate.
+Specifically, we can see that for the negative responses we have an increased probability of getting a Married instance rather than a single instance.
+On the other hand, we observa that in condition we have a positive response, it is more probable to get a Single instance etc.
+We expect that marital status will offer valuable information in our classifiers, as we observe different behaviour between the classes.
+
+Note that this varible will be converted to dummy variables in a later stage.
+
+```{r Marital_3,echo=FALSE}
+df<-df[df$Marital_Status!="Other",]
+df$Marital_Status=as.factor(df$Marital_Status)
+```
+
+### 2.1.7. Kidhome
+
+**Definition:** Number of kids at home (\<12 years old)
+
+**Type:** Integer
+
+```{r Kidhome_1,echo=FALSE}
+ggplot(df, aes(x=as.factor(Kidhome),fill=Response))+
+  geom_bar(stat="count", width=0.7)+scale_fill_manual(values=c("cadetblue3","tan1"))+
+  theme_minimal()+labs(x ="Number of Kids at Home", y = "Count of Records")
+```
+
+The number of kids at home ranges from 0 to 2.
+We should proceed in a covariation analysis between this variable and other variables in order to see how this variable may contribute to our models.
+
+```{r Kidhome_2,echo=FALSE,warning=FALSE}
+df_kid <- df %>% group_by(Response,Kidhome) %>% summarize(count = n()) %>%  mutate(pct = count/sum(count))
+
+df_kid
+rm(df_kid)
+```
+
+The distribution of having a kid at home for each class differentiates.
+However, we canno condude if this differentiation of the probabilities will actually contribute to our model from the univariate analysis.
+
+### 2.1.7. Teenhome
+
+**Definition:** Number of teenagers at home (\> 12 and \< 18 years old)
+
+**Type:** Integer
+
+```{r Teenhome_1,echo=FALSE}
+ggplot(df, aes(x=as.factor(Teenhome),fill=Response))+
+  geom_bar(stat="count", width=0.7)+scale_fill_manual(values=c("cadetblue3","tan1"))+
+  theme_minimal()+labs(x ="Number of Teenagers", y = "Count of Records")
+```
+
+```{r Teenhome_2,echo=FALSE,warning=FALSE}
+df_teen <- df %>% group_by(Response,Teenhome) %>% summarize(count = n()) %>%  mutate(pct = count/sum(count))
+
+df_teen
+
+rm(df_teen)
+```
+
+The conditional probabilities sufficiently differ for each class of Repsonse.
+Therefore we should expect this variable to have an important role in our models.
+
+**Combination of Teenhome and Kidhome:**
+
+An idea is to combine the information of kidhome and teenhome in one column.
+Specifically, we could create a column that indicates the number of people \<18 at home.
+
+```{r Teenhome_3,echo=FALSE}
+df$Num_Children=df$Kidhome+df$Teenhome
+df$Num_Children=as.factor(df$Num_Children)
+
+ggplot(df, aes(x=as.factor(Num_Children),fill=Response))+
+  geom_bar(stat="count", width=0.7)+scale_fill_manual(values=c("cadetblue3","tan1"))+
+  theme_minimal()+labs(x ="Number of Children", y = "Count of Records")
+```
+
+```{r Teenhome_4,echo=FALSE}
+tot_child <- df %>% group_by(Response,Num_Children) %>% summarize(count = n()) %>%  mutate(pct = count/sum(count))
+
+tot_child
+
+rm(tot_child)
+```
+
+```{r Teenhome_5,echo=FALSE}
+df %>% count(Response, Num_Children) %>% group_by(Response) %>%
+  mutate(prop = n / sum(n)) %>%
+  ggplot(mapping = aes(x = Num_Children, y = Response)) +
+  geom_tile(mapping = aes(fill = prop))
+```
+
+We observe that we have a different behavior of distribution for each class.
+Note that we have decided not to use this variable in our model, as we might loos valuable information from the individual Kidhome and Teenhome.
+In order to include this infomration we should introduce an interation term of these two variables and see how the model performs.
+
+### 2.1.8. Income
+
+**Definition:** Annual Income of Customer
+
+**Type:** Numerical
+
+**Investigation of NA values:**
+
+```{r income_1,echo=FALSE}
+df_income_na<-df[which(is.na(df$Income)),]
+df_income_na
+
+```
+
+```{r income_2,echo=FALSE}
+cat("Percentage of NAs in Income Column:",round(nrow(df_income_na)/nrow(df)*100,2),"%\n")
+cat("Number of this records that refer to Response=1:",nrow(df_income_na[df_income_na$Response==1,]))
+```
+
+We have around 1% of our dataset with NAs in column Income, from which 1 refers a positive instance of our target variable.
+
+Idea 1: Exclude these rows from our dataset, as we already have significant information for the negative instances in our target variable (85:15 imbalanced data).
+
+Idea 2: Use interpolation to fill the NA values
+
+We should also see how our variable behaves for the rest of the values and then decide how to treat the NA values.
+
+```{r income_3,echo=FALSE}
+df_excl_na<-df[!is.na(df$Income),]
+options(scipen = 999)
+
+plot1<- ggplot(df_excl_na, aes(y=Income)) + 
+    geom_boxplot(fill="cadetblue3", alpha=0.6) 
+plot2 <- ggplot(df_excl_na, aes(x=Income)) +geom_histogram(aes(y=after_stat(density)),fill="cadetblue3",col="cadetblue4")+
+  geom_density(col="cadetblue4",linewidth = 1.2) +
+ labs(x ="Annual Income", y = "Density")
+
+grid.arrange(plot1, plot2, ncol=2)
+
+```
+
+```{r income_4,echo=FALSE}
+out_income<-out_feature("Income",df_excl_na)
+cat("Percentage of Outliers in Income Variable:",round(nrow(out_income)/nrow(df)*100,2),"%\n")
+```
+
+From both boxplot we observe that we have an extreme instance in income, which will might affect our models performance and the contribution of this variable to our model.
+
+We present below some summary statistics with and without this extreme value in order to see our variables characteristics.
+
+```{r income_5,echo=FALSE}
+descr_stat("Income",df_excl_na)
+descr_stat("Income",df_excl_na[df_excl_na$Income!=max(df_excl_na$Income),])
+
+```
+
+From the first summary, we observe a very high variance and kurtosis.
+The high value of Kurtosis indicates that the high value of variace might be due to the outliers values that we have in our dataset.
+Moreover, it seems that we also have a right-skeWd distribution.
+
+We perform the same analysis after removing the extreme value.
+Kurtosis and Variance have significally decreased, confirming the assumptions that we haev stated before.
+Moreover, we observet that skewness is also decreased, in a way that now it's close to zero and thus the distribution is more similar to a symmetric one.
+
+However, in order to decide if we are going to remove this variable, we should evaluate the performance of the logistic regression with and without this variable.
+
+We proceed by plotting the distribution of the Income for each class of our target variable with and without the extreme value.
+
+```{r income_6,echo=FALSE}
+options(scipen = 999)
+plot1<-ggplot(data = df_excl_na, mapping = aes(x = Income, colour = Response)) + geom_freqpoly(aes(y=..density..))+ theme(legend.position="bottom")
+
+plot2<-ggplot(data = df_excl_na[df_excl_na$Income!=max(df_excl_na$Income),], mapping = aes(x = Income, colour = Response)) + geom_freqpoly(aes(y=..density..))+ theme(legend.position="bottom")
+
+grid.arrange(plot1,plot2,ncol=2)
+```
+
+From the first plot, we can see that the density function of the positive class is slightly shifted to the right compared to the negative class.
+In general, because we have a large tail (due to the extreme value), we are not able to conclude something more.
+
+On the other hand, if we observe the second plot, we observe a significant difference between the two distributions.
+For the negative class,we have a more symmetric behaviour around its mean, bell-shape and unimodal distribution and with a tendancy to have a higher probability income around 50,000 (Around is also defined by the respective variance).
+For the positive class we observe a very rational distribution, with 3 different peaks,giving higher probability for instances with higher income.
+Therefore, we expect this variable to statistically significant in our model.
+
+We proceed by interpolating the NAs in Income variable, as loosing 1% of our dataset will might lead to loosing valuable information.
+
+```{r income_8,echo=FALSE}
+# interpolation with the mean of each class and after excluding the influential observation
+
+df_excl_max<-df_excl_na[df_excl_na$Income!=max(df_excl_na$Income),] 
+
+avg_0<-mean(df_excl_max[df_excl_max$Response==0,]$Income)
+avg_1<-mean(df_excl_max[df_excl_max$Response==1,]$Income)
+```
+
+```{r income_9,echo=FALSE}
+df[is.na(df$Income)==TRUE & (df$Response==0),]$Income<-avg_0
+df[is.na(df$Income)==TRUE & (df$Response==1),]$Income<-avg_1
+```
+
+```{r}
+cat("Number of NAs in Income Column:",sum(is.na(df$Income)))
+```
+
+```{r}
+rm(df_income_na)
+```
+
+### 2.1.9. Amount Spend on Fish and Meat Products
+
+**Definition:** Amount Spent on Fish and Meat Products (2 different variables)
+
+**Type:** Numerical
+
+```{r fish_meat_1,echo=FALSE}
+plot1<- ggplot(df, aes(y=MntFishProducts)) + 
+    geom_boxplot(fill="tan1", alpha=0.6) 
+plot2<- ggplot(df, aes(x=MntFishProducts )) +geom_histogram(aes(y=after_stat(density)),fill="tan1",col="tan2",alpha=0.3)+
+  geom_density(col="tan2",linewidth = 1.2) +
+ labs(x ="Amount Spent in Fish", y = "Density")
+plot3<- ggplot(df, aes(y=MntMeatProducts)) + 
+    geom_boxplot(fill="cadetblue3", alpha=0.6) 
+plot4 <- ggplot(df, aes(x=MntMeatProducts )) +geom_histogram(aes(y=after_stat(density)),fill="cadetblue2",col="cadetblue4")+
+  geom_density(col="cadetblue4",linewidth = 1.2) +
+ labs(x ="Amount Spent in Meat", y = "Density")
+
+grid.arrange(plot1, plot2,plot3,plot4, ncol=2,nrow=2)
+
+```
+
+We observe that the behavior of these 2 features look very alike, but with a difference in the value range of each.
+We observe that the Amount spent in Fish is relatively lower to the amount spent in meat.
+For both features, we observe a significant amount of outliers in each of them and a heavy tailed-distribution.
+
+We proceed by calculating some statistics for these two variables.
+
+```{r fish_meat_2,echo=FALSE}
+descr_stat(c("MntFishProducts","MntMeatProducts"),df)
+```
+
+Both distributions are right-skewed as there is skewness is greater than 0 and positive (we have also seen this on the previous plots).
+Moreover, we have a relatively high kurtosis which we also expected as we have long-tails for both of them.
+We will now calculate the porportion of outliers in each of this features and decide how to treat them.
+
+```{r fish_meat_3,echo=FALSE}
+out_fish<-out_feature("MntFishProducts",df)
+out_meat<-out_feature("MntMeatProducts",df)
+cat("Percentage of outliers in Amount spent in Fish:",round(nrow(out_fish)/nrow(df)*100,2),"%\n")
+cat("Percentage of outliers in Amount spent in Meat:",round(nrow(out_meat)/nrow(df)*100,2),"%\n")
+
+```
+
+We have approximately about 9.7% of fish amount observations and 8.5% of meat amount observations to be considered as outliers.
+These observations should not be removed, as they explain the behavior of this variable.
+
+Now we proceed with the exploration of any difference of the distribution of the amount of meat and fish purchased with the target variables classes.
+
+```{r fish_meat_4,echo=FALSE}
+
+plot3<-ggplot(data = df, mapping = aes(x = MntFishProducts, colour = Response)) + geom_freqpoly(aes(y=..density..))+ theme(legend.position="bottom")
+
+plot4<-ggplot(data = df, mapping = aes(x = MntMeatProducts, colour = Response)) + geom_freqpoly(aes(y=..density..))+ theme(legend.position="bottom")
+
+grid.arrange(plot3,plot4, ncol=2)
+
+```
+
+For both fish and meat product there is tendency of purchasing small up to 0 amount of products for the negative responses.
+Moreover, we observe that on tails for both density functions, the tails for the positive class are up-shifted compared to the negative class.
+This means that higher probability is allocated to higher amount of these products purchased from the negative class.
+
+### 2.1.10. Amount Spend on Fruits, Sweet, Wine and Gold Products
+
+**Definition:** Amount Spent on Fruits,Sweets,Wined and Gold products purchased the last 2 years.
+(4 different variables)
+
+**Type:** Numerical
+
+```{r fruit_sweet_wine_1,echo=FALSE,,fig.height=10,fig.width=10}
+plot1<- ggplot(df, aes(y=MntFruits)) + 
+    geom_boxplot(fill="tan1", alpha=0.6) 
+plot2<- ggplot(df, aes(x=MntFruits )) +geom_histogram(aes(y=after_stat(density)),fill="tan1",col="tan2",alpha=0.3)+
+  geom_density(col="tan2",linewidth = 1.2) +
+ labs(x ="Amount Spent in Fruits", y = "Density")
+
+plot3<- ggplot(df, aes(y=MntSweetProducts)) + 
+    geom_boxplot(fill="cadetblue3", alpha=0.6) 
+plot4 <- ggplot(df, aes(x=MntSweetProducts )) +geom_histogram(aes(y=after_stat(density)),fill="cadetblue2",col="cadetblue4")+
+  geom_density(col="cadetblue4",linewidth = 1.2) +
+ labs(x ="Amount Spent in Sweets", y = "Density")
+
+plot5<- ggplot(df, aes(y=MntWines)) + 
+    geom_boxplot(fill="firebrick", alpha=0.6) 
+plot6 <- ggplot(df, aes(x=MntWines )) +geom_histogram(aes(y=after_stat(density)),fill="firebrick",col="darkred",alpha=0.4)+
+  geom_density(col="darkred",linewidth = 1.2) +
+ labs(x ="Amount Spent in Wines", y = "Density")
+
+plot7<- ggplot(df, aes(y=MntGoldProds)) + 
+    geom_boxplot(fill="palegreen3", alpha=0.6) 
+plot8 <- ggplot(df, aes(x=MntGoldProds )) +geom_histogram(aes(y=after_stat(density)),fill="palegreen3",col="darkgreen",alpha=0.4)+
+  geom_density(col="darkgreen",linewidth = 1.2) +
+ labs(x ="Amount Spent in Wines", y = "Density")
+
+grid.arrange(plot1, plot2,plot3,plot4, plot5,plot6,plot7,plot8,ncol=2,nrow=4)
+
+```
+
+As before, we observe that the behaviour of these variables' distributions are very alike.
+This might be due to the nature of these variables (all of them refer to amount of products purchased) or due to correlation between them.
+
+We proceed by calculating some statistics for these variables.
+
+```{r fruit_sweet_wine_2,echo=FALSE}
+descr_stat(c("MntFruits","MntSweetProducts","MntWines","MntGoldProds"),df)
+```
+
+We observe a high kurtosis for Amount purchased in fruits, sweets and Gold which is mainly due to the long tails of these distributions.
+Amount of wines purchased on the other hand, seems to have heavier tails, which actually is the reason of not having such a high amount of outliers and kurtosis.
+
+**Outliers detection:**
+
+```{r fruit_sweet_wine_3,echo=FALSE}
+out_fruit<-out_feature("MntFruits",df)
+out_sweet<-out_feature("MntSweetProducts",df)
+out_wines<-out_feature("MntWines",df)
+out_gold<-out_feature("MntGoldProds",df)
+
+
+cat("Percentage of outliers in Amount spent in Fruits:",round(nrow(out_fruit)/nrow(df)*100,2),"%\n")
+cat("Percentage of outliers in Amount spent in Sweets:",round(nrow(out_sweet)/nrow(df)*100,2),"%\n")
+cat("Percentage of outliers in Amount spent in Wines:",round(nrow(out_wines)/nrow(df)*100,2),"%\n")
+cat("Percentage of outliers in Amount spent in Gold:",round(nrow(out_gold)/nrow(df)*100,2),"%\n")
+
+
+```
+
+We proceed with the investigation of correlation between these features and our target variable.
+
+```{r fruit_sweet_wine_4,echo=FALSE,fig.height=5,fig.width=10}
+
+plot1<-ggplot(data = df, mapping = aes(x = MntFruits, colour = Response)) + geom_freqpoly(aes(y=..density..))
+
+plot2<-ggplot(data = df, mapping = aes(x = MntSweetProducts, colour = Response)) + geom_freqpoly(aes(y=..density..))
+
+plot3<-ggplot(data = df, mapping = aes(x = MntWines, colour = Response)) + geom_freqpoly(aes(y=..density..))
+
+plot4<-ggplot(data = df, mapping = aes(x = MntGoldProds, colour = Response)) + geom_freqpoly(aes(y=..density..))
+
+grid.arrange(plot1,plot2,plot3,plot4, ncol=2)
+```
+
+We observe that Amount of Wines is actually expected to be valuable as it differentiates a lot between the two classes.
+We also observe that the amount of gold products prchased is right-shifted for the positive class of our target variable.
+
+### 2.1.11. Number of purchases
+
+**Definition:** • NumDealsPurchases: number of purchases made with discount • NumCatalogPurchases: number of purchases made using catalog (buying goods to be shipped through the mail) • NumStorePurchases: number of purchases made directly in stores • NumWebPurchases: number of purchases made through the company's website
+
+**Type:** Integer
+
+We print below the frquencncies for each Purchase type.
+
+```{r num_purchases_1,echo=FALSE,fig.width=6,fig.height=6}
+plot1<-ggplot(df, aes(x=NumDealsPurchases,fill=Response))+
+  geom_bar(stat="count", width=0.7)+scale_fill_manual(values=c("cadetblue3","tan1"))+
+  theme_minimal()+labs(x ="Number of Deals Purchases", y = "Count of Records")+ theme(legend.position="bottom")
+plot2<-ggplot(df, aes(x=NumCatalogPurchases,fill=Response))+
+  geom_bar(stat="count", width=0.7)+scale_fill_manual(values=c("cadetblue3","tan1"))+
+  theme_minimal()+labs(x ="Number of Catalog Purchase", y = "Count of Records")+ theme(legend.position="bottom")
+plot3<-ggplot(df, aes(x=NumStorePurchases,fill=Response))+
+  geom_bar(stat="count", width=0.7)+scale_fill_manual(values=c("cadetblue3","tan1"))+
+  theme_minimal()+labs(x ="Number of Store Purchase", y = "Count of Records")+ theme(legend.position="bottom")
+plot4<-ggplot(df, aes(x=NumWebPurchases,fill=Response))+
+  geom_bar(stat="count", width=0.7)+scale_fill_manual(values=c("cadetblue3","tan1"))+
+  theme_minimal()+labs(x ="Number of Web Purchase", y = "Count of Records")+ theme(legend.position="bottom")
+
+grid.arrange(plot1,plot2,plot3,plot4, ncol=2)
+```
+
+### 2.1.12. Number of web visits in last month
+
+**Definition:** Number of web visits in last month
+
+**Type:** Integer
+
+```{r num_visits_1,echo=FALSE}
+ggplot(df, aes(x=NumWebVisitsMonth ,fill=Response))+
+  geom_bar(stat="count", width=0.7)+scale_fill_manual(values=c("cadetblue3","tan1"))+
+  theme_minimal()+labs(x ="Number of Visits of Month", y = "Count of Records")
+```
+
+From the above plot, we observe that we have some observations that refer to high number of visits of month.
+The important thing here is that for all of this information, we do not have actually someone that has positively responded to the last Marketing campaign.
+This might an indication that is we have high number of visits it is more probable that the customer will not respond.
+A way of interpreting this, is htat if we have an incresing number of visits per month, then the customer actually might not be convinced to buy the products (might seeing/comapring prices etc).
+However, we should note that all that we have mentioned are assumptions and not conclusions as we do not have significant amount of observations to make accurate conclusions.
+
+```{r num_visits_3,echo=FALSE}
+df_visits <- df %>% group_by(Response,NumWebVisitsMonth) %>% summarize(count = n()) %>%  mutate(pct = count/sum(count))
+
+df_visits[df_visits$Response==1,]
+
+rm(df_visits)
+```
+
+### 2.1.13. Recency
+
+**Definition:** Number of days since the last purchase
+
+**Type:** Integer
+
+```{r recency_1,echo=FALSE}
+summary(df$Recency)
+```
+
+In order to identify any patterns, or different behavior between recency and our target variable, we produce the histogram for each class.
+
+```{r recency_2,echo=FALSE}
+plot1<-ggplot(df[df$Response==0,], aes(x=Recency)) +geom_histogram(fill="cadetblue3",col="cadetblue4",alpha=0.4)+
+ labs(x ="Recency", y = "Count")+
+  scale_y_continuous(limits=c(0, 100)) + ggtitle("Histogram for Negative Response")
+plot2<-ggplot(df[df$Response==1,], aes(x=Recency)) +geom_histogram(fill="tan1",col="tan2",alpha=0.4)+
+ labs(x ="Recency", y = "Count")+
+  scale_y_continuous(limits=c(0, 100))+ ggtitle("Histogram for Positive Response")
+ 
+grid.arrange(plot1,plot2, ncol=2)
+
+```
+
+We will alse create the density plots for the specific classes to be easier for us to compare.
+Note that freqpoly might not be the most suitable plot in this case, as we actually have discrete random variables and not continuous.
+
+```{r}
+ggplot(data = df, mapping = aes(x = Recency, colour = Response)) + geom_freqpoly(aes(y=..density..))
+```
+
+We observe that for the Negative Responses, there is no specific pattern between the customer Recency, expect te fact that as for zero or very low values of Recency we have a decreased probability of rejecting the offer.
+On the other hand, for the positive Reponses, we can see that the majority of customers that have low Recency.
+This information can be justify from the frequency plot too,as there is higher probability of positive response in lower recency.
+
+## 2.2 Modification of the dataset
+
+During the explanatory analysis,we have made some adjustments in some variables.
+Therefore, we are now going to create a new dataframe that will include these adjustments in order to proceed in the modelling phase.
+
+1.  Remove columns that we have modify and created a new one.
+
+```{r df_mod_1,echo=FALSE}
+df_mod<-df
+
+#Remove the id, num_children and education
+to_remove <- c("Num_Children","Education")
+df_mod<-df_mod[ , !(names(df_mod) %in% to_remove)]
+```
+
+### 2.2.2. Date of becoming a customer - As factor
+
+```{r}
+df_mod2<-df_mod
+df_mod2$Year_Customer<-as.numeric(format(df$Dt_Customer,'%Y'))
+df_mod2$Month_Customer<-as.numeric(format(df$Dt_Customer,'%m'))
+
+df_mod2$Month_Customer<-as.factor(df_mod2$Month_Customer)
+df_mod2<-df_mod2[,names(df_mod2)!="Dt_Customer"]
+
+ggplot(df_mod2, aes(x=Month_Customer ,fill=Response))+
+  geom_bar(stat="count", width=0.7)+scale_fill_manual(values=c("cadetblue3","tan1"))+
+  theme_minimal()+labs(x ="Number of Visits of Month", y = "Count of Records")
+
+```
+
+### 2.2.1. Date of becoming customers - Cycliacal encoding
+
+we are going to extract the information of year and the day of the year of becoming a customer.
+We will use cyclical encoding to transform the day of the year into numerical variable.
+This will enable our model to capture any seasonality appears in the day of beacoming a customer.
+
+```{r df_mod_3,echo=FALSE}
+df_mod$Year_Customer<-as.numeric(format(df$Dt_Customer,'%Y'))
+df_mod$Month_Customer<-as.numeric(format(df$Dt_Customer,'%m'))
+df_mod$Day_Customer<-as.numeric(format(df$Dt_Customer,'%d'))
+
+#We will use the Month and day in order to find the day of the year that the customer was registered
+
+days_df<-data.frame(months=1:12,common_year=c(31,28,31,30,31,30,31,31,30,31,30,31))
+days_df$leap_year<-days_df$common_year
+days_df$leap_year[2]<-29
+days_df$common_cum<-cumsum(days_df$common_year)
+days_df$leap_cum<-cumsum(days_df$leap_year)
+
+
+df_mod$Day_of_Year<-rep(NA,nrow(df_mod))
+days_prev_months<-0
+
+for (i in 1:nrow(df_mod)){
+  if (df_mod$Month_Customer[i]==1){
+    days_prev_months<-0
+  } else{
+      if(df_mod$Year_Customer[i]%%4==0){
+        days_prev_months<-days_df[days_df$months==(df_mod$Month_Customer[i]-1),]$leap_cum
+      } else{
+        days_prev_months<-days_df[days_df$months==(df_mod$Month_Customer[i]-1),]$common_cum
+      }
+  }
+  df_mod$Day_of_Year[i]<-days_prev_months+df_mod$Day_Customer[i]
+}
+
+#we should apply cyclical encoding to the day of the year
+
+df_mod$Day_of_Year_sin<-rep(NA,nrow(df_mod))
+df_mod$Day_of_Year_cos<-rep(NA,nrow(df_mod))
+
+#For leep year
+df_mod[df_mod$Year_Customer%%4==0,]$Day_of_Year_sin<-sin(2*pi*df_mod[df_mod$Year_Customer%%4==0,]$Day_of_Year/366)
+df_mod[df_mod$Year_Customer%%4==0,]$Day_of_Year_cos<-cos(2*pi*df_mod[df_mod$Year_Customer%%4==0,]$Day_of_Year/366)
+
+#For common year
+
+df_mod[df_mod$Year_Customer%%4!=0,]$Day_of_Year_sin<-sin(2*pi*df_mod[df_mod$Year_Customer%%4!=0,]$Day_of_Year/365)
+df_mod[df_mod$Year_Customer%%4!=0,]$Day_of_Year_cos<-cos(2*pi*df_mod[df_mod$Year_Customer%%4!=0,]$Day_of_Year/365)
+
+df_mod<-df_mod[,!(names(df_mod) %in% c("Month_Customer","Day_Customer","Dt_Customer","Day_of_Year"))]
+```
+
+## 2.3 Bivariate Analysis
+
+As we have already seen, the majority of our features are categorical or discrete.
+This means that Pearson correlation and scatter plots might not be suitable for all of them.
+Through our analysis we will perform some of them though.
+
+### 2.3.1. Correlation between Number of Purchases
+
+As we have seen in the univariate analysis, we have 4 different types of purchase information for each customer.
+We proceed into investigating if we have any correlation between them.
+
+```{r cor_num_purch_1,echo=FALSE}
+columns<-c("NumDealsPurchases","NumCatalogPurchases","NumStorePurchases","NumWebPurchases")
+temp_df<-df_mod[,names(df_mod) %in% columns]
+data.frame(cor(temp_df))
+```
+
+We observe that the Number of Store Purchases is correlated with Number of Web and Catalog Purchases.
+Number of Web Purchases have a weak correlation with number of deals purchased and catalog purchased.
+
+### 2.3.2. Year of Birth with Income
+
+```{r cor_age_income_1,echo=FALSE}
+columns<-c("Income","Year_Birth")
+temp_df<-df_mod[,names(df_mod) %in% columns]
+data.frame(cor(temp_df))
+```
+
+We observe a weak negative correlation between Year of Birth and Income.
+
+### 2.3.3. Amount of Products purchased -Number of Kids
+
+```{r cor_item_1,echo=FALSE}
+columns<-c("MntWines","MntFruits","MntMeatProducts","MntFishProducts","MntSweetProducts","MntGoldProds","Kidhome","Teenhome")
+temp_df<-df_mod[,names(df_mod) %in% columns]
+data.frame(cor(temp_df))
+```
+
+To start with the products purchased, we observe that all of the amount purchased are positively correlated with each other.
+Which actually might lead to the conclusion that people who tend to buy more amount of a specific type of product, tend to buy a relative increased amount to other products too.
+Note that in all the models we are going to implement, independancy between the variables is assumed.
+Therefore, this having correlated features, is a problem that we have to resolve.
+
+Moreover, we observe negative correlation between the number of kids at home with all amounts of purchased.
+Note that the majority of our observations refer to 0 or 1 kid at home.
+Therefore, this correlation is not actually suitable to make conclusions.
+
+### 2.3.4. Number of Teens - Marital Status
+
+```{r kid_marital_1,echo=FALSE}
+
+df %>% count(Marital_Status, Teenhome) %>% group_by(Marital_Status) %>%
+  mutate(prop = n / sum(n)) %>%
+  ggplot(mapping = aes(x = Teenhome, y = Marital_Status)) +
+  geom_tile(mapping = aes(fill = prop))
+
+```
+
+We observe that the number of teens at home differentiate among the different categories of Marital Status.
+It is interesting here to mention that: - We have a very similar behavior for Number of Teens for Divorced and Window people.
+- We have a very similar behavior for Number of Teens for Married and Together people.
+
+### 2.3.5. Number of Kids - Marital Status
+
+```{r kid_marital_2,echo=FALSE}
+
+df %>% count(Marital_Status, Kidhome) %>% group_by(Marital_Status) %>%
+  mutate(prop = n / sum(n)) %>%
+  ggplot(mapping = aes(x = Kidhome, y = Marital_Status)) +
+  geom_tile(mapping = aes(fill = prop))
+
+```
+
+We observe different behavior of kids at home, only for the widow category.
+It is more probable for a widow not to have a kids at home.
+
+### 2.3.6 Marital Status - Income
+
+```{r}
+df_mod_excl<-df_mod[df_mod$Income!=max(df_mod$Income),]
+ggplot(df_mod_excl, aes(x=Marital_Status, y=Income,fill=Marital_Status)) + 
+  geom_boxplot()
+```
+
+We observe that for widow people, the income 1st, 2nd (median) and 3rd quantile are up-shifted.
+For the other marital statuses, we see approcimately tge same quantiles, with single having the lowest median.
+
+We would like now to examine this covariation according to the class of our target variables.
+Therefore, we prodeed by recreating this plot for the respective classes.
+
+```{r}
+plot1<-ggplot(df_mod_excl[df_mod_excl$Response=="1",], aes(x=Marital_Status, y=Income,fill=Marital_Status)) + 
+  geom_boxplot()+ylim(min(df_mod_excl$Income), max(df_mod_excl$Income))+ theme(legend.position="none")+labs(title="Response 1 (Yes)")
+
+plot2<-ggplot(df_mod_excl[df_mod_excl$Response=="0",], aes(x=Marital_Status, y=Income,fill=Marital_Status)) + 
+  geom_boxplot()+ylim(min(df_mod_excl$Income), max(df_mod_excl$Income))+ theme(legend.position="none")+labs(title="Response 0 (No)")
+
+grid.arrange(plot1,plot2,ncol=2)
+```
+
+Observations: - Wider Boxplots (higher IQR) for Response Yes for every Marital Status (as we have less information) - Median of Income is also increased for every category of marital Status in the Response Yes group - It seems that these increases that we have are relatively equal for every category.
+Therefore, we do not expect any significant correlation between marital Status and Income.
+Note that this will be tested in a later stage.
+
+### 2.3.6 Education - Income
+
+Plotting the whole dataset to see if we have any different behaviour for each individual team.
+
+```{r}
+ggplot(df_mod_excl, aes(x=factor(Education_Num), y=Income,fill=factor(Education_Num))) + 
+  geom_boxplot()
+```
+
+We can see that the income variation is related to the Education level.
+People with the minimum Education Level tend to have lower income compared to people with higher education level.
+For the other levels, we cannot see any significant variation between them.
+
+Producing the same plot according to the class of each
+
+```{r}
+plot1<-ggplot(df_mod_excl[df_mod_excl$Response=="1",], aes(x=factor(Education_Num), y=Income,fill=factor(Education_Num))) + 
+  geom_boxplot()+ylim(min(df_mod_excl$Income), max(df_mod_excl$Income))+ theme(legend.position="none")+labs(title="Response 1 (Yes)")
+
+plot2<-ggplot(df_mod_excl[df_mod_excl$Response=="0",], aes(x=factor(Education_Num), y=Income,fill=factor(Education_Num))) + 
+  geom_boxplot()+ylim(min(df_mod_excl$Income), max(df_mod_excl$Income))+ theme(legend.position="none")+labs(title="Response 0 (No)")
+
+grid.arrange(plot1,plot2,ncol=2)
+```
+
+# 4. Modelling
+
+## 4.1. Logistic Regression
+
+### 4.1.1. Initial Modelling
+
+Firstly, we fit the logistic regression model with dataframe resulted by having months as categorical variables.
+
+```{r log_model_1,echo=FALSE}
+binom_fit_all <- glm(Response ~ .,data = df_mod2, family = binomial)
+summary(binom_fit_all)
+```
+
+From the resulted Residual deviance compared to the Null deviance, we can conclude that the logistic regression model actually performs better than the random model.
+Moreover, if we look at the resulted p-values for each feature coefficient, we observe that Income is not considered statistically significant.
+Through the exploratory analysis that we have implemented before, we have observed that we have an extreme value in the income feature.
+We will now evaluate if this extreme value is considered influential in our model and if this significantly changes the interpretation of the Income coefficient.
+In order to evaluate this, we will use the special case of Cook distance for logistic regression.
+
+```{r cook_1,echo=FALSE}
+cook <- cooks.distance(binom_fit_all)
+plot(cook, ylab = "Cook's distance", 
+     main = "Index plot of Cook's distance")
+```
+
+We have an observation in our dataset, with cook distance of 0.65.
+We proceed by investigating to which record corresponds.
+
+```{r cook_2,echo=FALSE}
+df_mod[as.numeric(cook) ==max(as.numeric(cook)),]
+```
+
+As expected, this relatively high cook distance refers to the observation with the extreme value in income feature.
+We will now exclude this record and re-fit the model, in order to see how it influences the overall performance and coefficient interpretation.
+
+```{r cook_3,echo=FALSE}
+binom_fit <- glm(Response ~., data = df_mod2, subset = (as.numeric(cook) < max(as.numeric(cook))),family = binomial)
+binom_sum<-summary(binom_fit)
+binom_sum
+```
+
+We observe that the Income is know considered statistically significant in significance level of 0,05.
+Therefore, we decide to remove this record from our dataset and then proceed with our analysis.
+
+As for the deviances, null deviance basically tell us how well the target variable is predicted by using only an intercept (random model) and residual deviance shows as how well the target variable is predicted by including the features in our model.
+Because our residual deviance is lower than the null deviance, we can assume that the model with all the predictors explain better our target variable than the null/random model.
+Thus, we can continue with the logistic regression model and try to make it better.
+We also calculate the p-value of Chi-Square test that is a statistical test that supports our conclusion
+
+```{r binom_chi_test}
+p_estimated<-pchisq(1745.2-1251.9, df=2049-2015, lower.tail=FALSE)
+cat("Estimated p-value:",round(p_estimated,5),"\n")
+if (p_estimated<0.05) cat("We reject the null hypothesis in siginifcance level of 0.05") else
+  cat("We cannot reject the null hypothesis in siginifcance level of 0.05")
+```
+
+Since this p-value is much less than .05, we would conclude that the model is highly useful for predicting the probability that a given individual will accept the marketing campaign.
+
+```{r cook_4,echo=FALSE}
+#exclude the influential observation from our datasets
+df_mod<- df_mod[as.numeric(cook)<max(as.numeric(cook)),]
+df_mod2<- df_mod2[as.numeric(cook)<max(as.numeric(cook)),]
+
+cook <- cooks.distance(binom_fit)
+plot(cook, ylab = "Cook's distance", 
+     main = "Index plot of Cook's distance")
+```
+
+We do not observe any other extreme observation that affects our model.
+Thus we proceed know we the current dataset.
+
+We know proceed by preparing a summary of metrics for the performance of our model.
+Note that the resulted metrics will actually refer to the training dataset.
+Therefore, this metrics will underestimate the actual ones.
+
+```{r log_model_3,echo=FALSE}
+binom_probs <- predict(binom_fit, type = "response")
+binom_pred <- rep(0, nrow(df_mod2))
+binom_pred[binom_probs > .5] <-1
+table1<-table(binom_pred, df_mod2$Response)
+table1
+```
+
+```{r confusion_matrix_1,echo=FALSE}
+plot_conf_matrix(table1)
+```
+
+```{r Class_Metrics_1,echo=FALSE}
+Class_Metrics(list(table1) , c('Train') )
+```
+
+We observe that our classifier, in this case logistic regression, is able to make good prediction in the negative instances of our target variable.
+This was actually expected as the majority of our records refer to the negative class and the classifier is "well-trained" for that specific class.
+
+On the other hand we can see that our positive instance prediction is very poor, as we are able to predict only 69 of 311 observations.
+In order to resolve this imbalance problem, we should apply down-sampling or up-sampling techniques in order to increase the positive instances in our dataset.
+By implementing this, we will be able to give more "weight" to the positive instances that we are more interested in.
+
+Before dealing with the imbalance problem, which should decide how we are going to take into account the Date of becoming a customer in our model.
+As we have seen before we had 2 datasets, one that cyclical encoding has been performed and one with one hot encoding.
+Each of these variables have a slightly different information in them, cyclical encoding will enable us to capture any annual seasonality and one-hot encoding will enable us to capture monthly seasonality.
+
+```{r cook_3,echo=FALSE}
+binom_fit2 <- glm(Response ~., data = df_mod,family = binomial)
+binom_sum2<-summary(binom_fit2)
+binom_sum2
+```
+
+```{r log_model_3,echo=FALSE}
+binom_probs2 <- predict(binom_fit2, type = "response")
+binom_pred2 <- rep(0, nrow(df_mod))
+binom_pred2[binom_probs2 > .5] <-1
+table2<-table(binom_pred2, df_mod$Response)
+#table2
+```
+
+```{r Class_Metrics_1,echo=FALSE}
+Class_Metrics(list(table1,table2) , c('Train - Categorical',"Train - Cyclical") )
+```
+
+From both summary of the fitted models, we observe that in case of one-hot encoding we see that some months are considered statistically significant for our model.
+On the other hand, for cyclical encoding, we observe that both sin and cos of the day of the year are not considered significant in significance level of 0.05.
+Therefore, it seems that the montly seasonality, contributes better to our model interpretation.
+In addition, we can see form the above performance metric table, that we hhave increasing scores when one-hot encoding is applied.
+
+Therefore, we proceed with one-hot encoding dataset.
+
+### 4.1.2. Train/Test Dataset
+
+For evaluation purposes, we are going to devide our dataset to training anf test.
+Train dataset will be used from the classifiers to identify patterns and test dataset will be used to evaluate how our model performs to uknown data.
+
+Our dataset is relatively small, therefore, we will use a ratio of 80:20 to separate it.
+
+```{r split_dataset,echo=FALSE}
+n<-nrow(df_mod2)
+set.seed(1234)
+test <- sample(1:n,round(n/5),replace = FALSE)
+df_test<-df_mod2[test,]
+df_train<-df_mod2[-test,]
+```
+
+Now that we have split the dataset, we should check if the imbalance ratio has been transfered equally to both datasets.
+
+```{r split_dataset_check,echo=FALSE}
+nrow(df_train[df_train$Response==1,])/nrow(df_train)
+nrow(df_test[df_test$Response==1,])/nrow(df_test)
+```
+
+### 4.1.3. Dealing with Imbalance
+
+The main problem that we have with our data, and actually is the purposes of this analysis, is that there is no equal distribution between our target variable's classes.
+Therefore, our classifiers will be more biased to the majority class which will actually result to poor performance of our classifier.
+In order to eliminate this we should use down-sampling or up-sampling techniques.
+If we would use down-sampling, observations from the majority class will be deleted, in order to balance the ratio between the 2 classes.
+This will also mean that we will probably loose valuable information for the negative class.
+As for the up-sampling techniques, we have considered 2 options: randomized up-sampling and SMOTE.
+Randomized up-sampling, will enable us to increase the positive instances in our dataset by creating identical observations to the ones that we already have in our dataset.
+On the other hand, SMOTE is an up-sampling technique that create synthetic data for the minority class based on the using the k nearest neighbours.
+
+We decided to use SMOTE, in order not to loose valuable information (result of down-sampling) and overfit (Result of randomized up-sampling).
+Note that if we chose k=1 for SMOTE, then we would have the same result with randomized up-sampling.On the other hand, if we use high number of k, we will also end up creating the same observations as we have a limited amount of records referring to the positive category of our target variable.
+Therefore, we decided to use k=3, to create our synthetic data.
+
+For the smote function we will use the smotefamily package, which requires the a numerical model matrix.
+Therefore, we apply one hot encoding to the categorical features that we have.
+
+```{r}
+#fastDummies library is used here
+X.train<-df_train[,names(df_train)!="Response"]
+X.test<-df_test[,names(df_test)!="Response"]
+
+dummy_col<-c("Marital_Status","Month_Customer","Complain")
+
+X.train<-dummy_cols(X.train, select_columns =dummy_col,
+                       remove_first_dummy = TRUE)
+X.test<-dummy_cols(X.test, select_columns =dummy_col,
+                       remove_first_dummy = TRUE)
+
+y.train<-rep(0,nrow(df_train))
+y.test<-rep(0,nrow(df_test))
+
+
+y.train[df_train$Response=="1"]<-1
+y.test[df_test$Response=="1"]<-1
+
+
+X.train<-X.train[,!(names(X.train) %in% dummy_col)]
+X.test<-X.test[,!(names(X.test) %in% dummy_col)]
+
+df_test_mod<-dummy_cols(df_test, select_columns =dummy_col,
+                       remove_first_dummy = TRUE)
+
+df_test_mod<-df_test_mod[,!(names(df_test_mod) %in% dummy_col)]
+
+```
+
+We aim to reduce the imbalance to at least 2:1 ratio (2/3 refering to negative instances and 1/3 to positive instances).
+
+```{r}
+library(smotefamily)
+set.seed(123456)
+
+smote_result<-smotefamily::SMOTE(X=X.train, #model matrix
+                                target=y.train, #classes
+                                K=3, #neighbors
+                                dup_size=2) #relative size compare to the original data
+
+df_train_sm<-smote_result$data
+
+#creating the new up-sampled dataframe
+names(df_train_sm)[names(df_train_sm)=="class"]<-"Response"
+df_train_sm$Response<-as.factor(df_train_sm$Response)
+```
+
+We confirm that the target ratio of class balance was achieved.
+
+```{r}
+nrow(df_train_sm[df_train_sm$Response==1,])/nrow(df_train_sm)
+```
+
+```{r}
+cat("Number of observations before smote:",nrow(df_train))
+cat("\nNumber of observations after smote:",nrow(df_train_sm))
+```
+
+```{r}
+#Fix inconsistencies that might have occur after applying smote
+
+df_train_sm$Year_Birth<-round(df_train_sm$Year_Birth,0)
+df_train_sm$Year_Customer<-round(df_train_sm$Year_Customer,0)
+df_train_sm$Education_Num<-floor(df_train_sm$Education_Num)
+ 
+df_train_sm$NumCatalogPurchases<-round(df_train_sm$NumCatalogPurchases,0)
+df_train_sm$NumDealsPurchases<-round(df_train_sm$NumDealsPurchases,0)
+df_train_sm$NumWebPurchases<-round(df_train_sm$NumWebPurchases,0)
+df_train_sm$NumStorePurchases<-round(df_train_sm$NumStorePurchases,0)
+df_train_sm$NumWebVisitsMonth<-round(df_train_sm$NumWebVisitsMonth,0)
+ 
+df_train_sm$Marital_Status_Married<-round(df_train_sm$Marital_Status_Married,0)
+df_train_sm$Marital_Status_Single<-round(df_train_sm$Marital_Status_Single,0)
+df_train_sm$Marital_Status_Together<-round(df_train_sm$Marital_Status_Together,0)
+df_train_sm$Marital_Status_Widow<-round(df_train_sm$Marital_Status_Widow,0)
+
+
+df_train_sm$Month_Customer_2<-round(df_train_sm$Month_Customer_2,0)
+df_train_sm$Month_Customer_3<-round(df_train_sm$Month_Customer_3,0)
+df_train_sm$Month_Customer_4<-round(df_train_sm$Month_Customer_4,0)
+df_train_sm$Month_Customer_5<-round(df_train_sm$Month_Customer_5,0)
+df_train_sm$Month_Customer_6<-round(df_train_sm$Month_Customer_6,0)
+df_train_sm$Month_Customer_7<-round(df_train_sm$Month_Customer_7,0)
+df_train_sm$Month_Customer_8<-round(df_train_sm$Month_Customer_8,0)
+df_train_sm$Month_Customer_9<-round(df_train_sm$Month_Customer_9,0)
+df_train_sm$Month_Customer_10<-round(df_train_sm$Month_Customer_10,0)
+df_train_sm$Month_Customer_11<-round(df_train_sm$Month_Customer_11,0)
+df_train_sm$Month_Customer_12<-round(df_train_sm$Month_Customer_12,0)
+
+
+df_train_sm$Complain_1<-round(df_train_sm$Complain_1,0)
+
+df_train_sm$Kidhome<-round(df_train_sm$Kidhome,0)
+df_train_sm$Teenhome<-round(df_train_sm$Teenhome,0)
+```
+
+We will see if the smote dataset will actually help our model.
+
+```{r cook_3,echo=FALSE}
+#Without smote
+binom_fit <- glm(Response ~., data = df_train,family = binomial)
+binom_sum<-summary(binom_fit)
+
+#With smote
+binom_fit_sm <- glm(Response ~.,data = df_train_sm,family = binomial)
+binom_sum_sm<-summary(binom_fit_sm)
+```
+
+```{r log_model_3,echo=FALSE}
+#Without smote
+binom_probs <- predict(binom_fit, type = "response")
+binom_pred <- rep(0, nrow(df_train))
+binom_pred[binom_probs > .5] <-1
+table_<-table(binom_pred, df_train$Response)
+#table_
+
+#With smote
+binom_probs_sm <- predict(binom_fit_sm, type = "response")
+binom_pred_sm <- rep(0, nrow(df_train_sm))
+binom_pred_sm[binom_probs_sm > .5] <-1
+table_sm<-table(binom_pred_sm, df_train_sm$Response)
+#table_sm
+```
+
+```{r Class_Metrics_1,echo=FALSE}
+Class_Metrics(list(table_,table_sm) , c('Train - Without SMOTE',"Train - With SMOTE") )
+```
+
+```{r}
+#USING TEST DATASET
+#without SMOTE
+binom_probs_test<-predict(binom_fit, newdata =df_test[,!names(df_test)=="Response"],type = "response")
+binom_pred_test <- rep(0, nrow(df_test))
+binom_pred_test[binom_probs_test > .5] <-1
+table_test<-table(binom_pred_test, df_test$Response)
+
+#smote
+binom_probs_sm_test<-predict(binom_fit_sm, newdata =df_test_mod[,!names(df_test_mod)=="Response"],type = "response")
+binom_pred_sm_test <- rep(0, nrow(df_test_mod))
+binom_pred_sm_test[binom_probs_sm_test > .5] <-1
+table_sm_test<-table(binom_pred_sm_test, df_test_mod$Response)
+
+Class_Metrics(list(table_test,table_sm_test) , c('Test - Without SMOTE',"Test - With SMOTE") )
+```
+
+For the evaluation, we should use actually the Recall and the F1-score, as predicting a positive instance can be considered more important for us.
+
+We see that Recall and F1-score are increased, which basically indicates that if our logistic regression is trained in with the Up-sampled dataset, it will be able to separate the instances better.
+
+However, we can see that Precision is decreased for the SMOTE dataset.
+This is because by creating synthetic data in our model, we actually have a more biased classifier compared to the previous model.
+Therefore, our classifier, is more probable to classify a positive instance than before.
+As a result, the False Positive instances are increased and thus the precision is decreased.
+
+As we have already mentioned before, for our case missclassifying a positive instance is more important than missclassifying a negative instance.
+Therefore, we will proceed with the upsampled dataset.
+
+We print below the summary of the model that will present our base model (Logistic Regression with up-sampled SMOTE dataset).
+
+```{r binom_fit_sm_1,echo=FALSE}
+binom_sum_sm
+```
+
+We observe that the Residual deviance is lower than the Null deviance, indicating again that the current base model is better than any random model. (This can also be evaluated by calculating the Chi-Square value and the respective p-value)
+Having a deeper look now at the coefficients, we observe that not all of the amounts referring to products purchased are considered to be statistically significant.
+This might be due to the fact that we have correlated features (Something that we have saw in the bivariate analysis section).
+As we expected, year of birth are not considered statistically significant as they do not differentiate according to the classes of our target variable.
+Something that we did not actually expect is for the Education to be considered as not statistically significant.
+A probable reason behind this is for its information to be provided from other features too.
+According to the marital status, we see that the difference between divorced with married and together seem to be statistically significant (note here that Divorced category is included in the intercept).
+According to the Month of becoming a customer, we observe significant differences os significance level 0.05 with the following months: February, March, May, September, November and December.
+As we expected, complains category do not actually have significant difference, therefore we might assume that this variable does not contribute to our model.
+
+Below, we plot the confusion matrix of the base model.
+
+```{r binom_fit_sm_2,echo=FALSE}
+plot_conf_matrix(table_sm_test)
+```
+
+### 4.1.4. Multicollinearity
+
+We proceed with the examination of multi-collinearity in our data.
+We have already seen that we have some correlated features in our dataset (amount of products purchased).
+However, due to the fact that the majority of our predictors are categorical, we could not identify other correlated features as pearson correlation does not apply in categorical features.
+
+Another way of examining the multi-collinearity is using the generalized variance inflation factor that can be actually applied in categorical variables too.
+GVIF indicates the increase in the variance of a coefficient due to its collinearity with the other variables.
+
+The GVIF for a given predictor variable is calculated as the ratio of the variance of the estimated coefficient for that variable in a model including all other predictor variables, to the variance of the estimated coefficient for that variable in a model without the other predictor variables.
+
+If squared scaled GVIF is greater than 4,then we have an indication of collinerarity, if it is more than 10, then the problem is very serious, and we should try to eliminate it.
+
+In order to calculate the GVIF, we should indicate the categorical variables in our dataset.
+To do so, we should prepare a dataframe with the up-sampled dataset, that will show each category.
+
+```{r}
+df_train_sm_categ<-df_train_sm
+
+#Marital Status
+df_train_sm_categ$Marital_Status[df_train_sm_categ$Marital_Status_Married==1]<-"Married"
+df_train_sm_categ$Marital_Status[df_train_sm_categ$Marital_Status_Single==1]<-"Single"
+df_train_sm_categ$Marital_Status[df_train_sm_categ$Marital_Status_Together==1]<-"Together"
+df_train_sm_categ$Marital_Status[df_train_sm_categ$Marital_Status_Widow==1]<-"Widow"
+df_train_sm_categ$Marital_Status[is.na(df_train_sm_categ$Marital_Status)]<-"Divorced"
+
+df_train_sm_categ<-df_train_sm_categ[,!(names(df_train_sm_categ) %in% 
+                       c("Marital_Status_Married","Marital_Status_Single","Marital_Status_Together",
+                         "Marital_Status_Widow") )]
+
+
+#Customer Month
+df_train_sm_categ$Month_Customer[df_train_sm_categ$Month_Customer_2==1]<-"2"
+df_train_sm_categ$Month_Customer[df_train_sm_categ$Month_Customer_3==1]<-"3"
+df_train_sm_categ$Month_Customer[df_train_sm_categ$Month_Customer_4==1]<-"4"
+df_train_sm_categ$Month_Customer[df_train_sm_categ$Month_Customer_5==1]<-"5"
+df_train_sm_categ$Month_Customer[df_train_sm_categ$Month_Customer_6==1]<-"6"
+df_train_sm_categ$Month_Customer[df_train_sm_categ$Month_Customer_7==1]<-"7"
+df_train_sm_categ$Month_Customer[df_train_sm_categ$Month_Customer_8==1]<-"8"
+df_train_sm_categ$Month_Customer[df_train_sm_categ$Month_Customer_9==1]<-"9"
+df_train_sm_categ$Month_Customer[df_train_sm_categ$Month_Customer_10==1]<-"10"
+df_train_sm_categ$Month_Customer[df_train_sm_categ$Month_Customer_11==1]<-"11"
+df_train_sm_categ$Month_Customer[df_train_sm_categ$Month_Customer_12==1]<-"12"
+df_train_sm_categ$Month_Customer[is.na(df_train_sm_categ$Month_Customer)]<-"1"
+
+df_train_sm_categ<-df_train_sm_categ[,!(names(df_train_sm_categ) %in% 
+                       c("Month_Customer_2","Month_Customer_3","Month_Customer_4","Month_Customer_5",
+                         "Month_Customer_6","Month_Customer_7","Month_Customer_8","Month_Customer_9",
+                         "Month_Customer_10","Month_Customer_11","Month_Customer_12") )]
+
+#Complain
+df_train_sm_categ$Complain[df_train_sm_categ$Complain_1=="1"]<-"1"
+df_train_sm_categ$Complain[is.na(df_train_sm_categ$Complain)]<-"0"
+
+df_train_sm_categ<-df_train_sm_categ[,names(df_train_sm_categ)!="Complain_1"]
+
+```
+
+```{r}
+binom_fit_categ <- glm(Response ~., data = df_train_sm_categ,family = binomial)
+summary(binom_fit_categ)
+```
+
+```{r }
+library(car)
+vif_values <- data.frame(vif(binom_fit_categ))
+vif_values
+```
+
+We observe that we have a GVIF for Income equal to 5 and that the (GVIF)^1/2p is above 2.2 which is an indication for multicollinearity between our predictors.
+In such cases where we have high GVIF values, the logistic regression coefficients are very sensitive to minor changes in the data (something that we do not want).
+It has to be noted here that these just give us an indication of probable multicollinearity in our data and thus we shouldn't remove any variable by our own.
+In order to reduce multicollinearity we will perform Penalized logistic regression in a later stage and try implementing feature selection techniques.
+
+### 4.1.5. Feature Importance and Feature Selection
+
+**Feature Importance:**
+
+In this section, we examine which variables contribute the most to our model using their importance.
+The following plot indicates the percent of the total deviance explained by each variable alone and cumulatively with other variables in the model.
+The higher the percentage, the more important the variable is considered.
+
+```{r echo=FALSE,warning=FALSE}
+gtest <- glm(Response ~ .,data = df_train_sm, family = binomial(link = "logit"))
+gtestreduced <- glm(Response ~ 1, data = df_train_sm, family = binomial(link = "logit"))
+imp <- tornado::importance(gtest, gtestreduced)
+plot(imp)
+```
+
+We observe that the features with the higher marginal deviance are: Recency, Income, Amount of Wines purchsed, Number of Store purchases etc.
+To have a clearer look at the above results, we print below the variable importance graph.
+
+```{r feature_importance_2,echo=FALSE}
+set.seed(10)
+# estimate variable importance (based on the p-values)
+importance <- varImp(binom_fit_sm, scale=FALSE)
+importance %>% arrange(desc(Overall))
+                       
+ggplot2::ggplot(importance, aes(x=reorder(rownames(importance),Overall), y=Overall)) +
+geom_point( color="blue", size=4, alpha=0.6)+
+geom_segment( aes(x=rownames(importance), xend=rownames(importance), y=0, yend=Overall), 
+color='skyblue') +
+xlab('Variable')+
+ylab('Overall Importance')+
+theme_light() +
+coord_flip() 
+```
+
+It has to be noted here that the results we get from the feature importance were actually expected as they appear to be statistically significant on the summary that we printed before.
+
+**Feature selection:**
+
+Firstly, we should try the implementation of best subset selection for logistic regression in our dataset and see how it performs.
+
+```{r}
+X.train.sm<-df_train_sm[,names(df_train_sm)!="Response"]
+y.train.sm<-rep(0,nrow(df_train_sm))
+y.train.sm[df_train_sm$Response=="1"]<-1
+```
+
+```{r}
+library(bestglm)
+Xy<-as.data.frame(cbind(X.train.sm,y.train.sm))
+names(Xy)<-c(names(X.train.sm),"y")
+```
+
+```{r}
+fit1<-bess(X.train.sm, y.train.sm, family = "binomial",method="gsection",s.min = 1,s.max=ncol(X.train.sm),
+           K.max=ncol(X.train.sm)-1,max.steps=33)
+cat("\n")
+summary(fit1)
+```
+
+The best model is given is in accordance with the deviance.
+However, we want to use a more strict criterion that basically penalizes the addition of new variables in the model.
+We are going to use the BIC criterion.
+
+```{r}
+cat("Lower achieved BIC:",fit1$BIC[fit1$BIC==min(fit1$BIC)])
+```
+
+```{r}
+fit1
+```
+
+```{r}
+results_BSS<-data.frame(Dev=fit1$deviance,AIC=fit1$AIC,BIC=fit1$BIC,EBIC=fit1$EBIC)
+results_BSS[results_BSS$BIC==min(results_BSS$BIC),]
+results_BSS[results_BSS$AIC==min(results_BSS$AIC),]
+results_BSS[results_BSS$EBIC==min(results_BSS$EBIC),]
+```
+
+AIC, BIC and EBIC agree that the 3rd model is the best one.
+We proceed to find out which coefficients this model includes.
+
+The best subset that was actually selected based on the BIC and EBIC, has as independent variables the following:
+
+```{r}
+best<-fit1$beta[,3]
+best[best!=0]
+```
+
+```{r}
+selected_var<-names(best[best!=0])
+cat("Number of remaining predictors:",length(selected_var))
+```
+
+We observe that the results are very similar to the ones that we obtained from the step AIC function.
+We just have one less predictor here.
+We will see how this model performs.
+
+```{r}
+X.train.sm.sub<-X.train.sm[,names(X.train.sm) %in% selected_var]
+```
+
+```{r}
+train.dataset<-cbind(X.train.sm.sub,y.train.sm)
+names(train.dataset)<-c(names(X.train.sm.sub),"y")
+
+fit_sub<-glm(y~.,data=train.dataset,family=binomial)
+summary(fit_sub)
+```
+
+```{r}
+#transform test data too in order to evaluate our model
+X.test<-df_test[,names(df_test)!="Response"]
+
+X.test<-dummy_cols(X.test, select_columns =dummy_col,
+                       remove_first_dummy = TRUE)
+y.test<-rep(0,nrow(df_test))
+y.test[df_test$Response=="1"]<-1
+
+X.test<-X.test[,!(names(X.test) %in% dummy_col)]
+
+X.test.sub<-X.test[,names(X.test) %in% selected_var]
+
+```
+
+```{r}
+binom_probs_test_sub<-predict(fit_sub, newdata =X.test.sub,type = "response")
+binom_pred_test_sub <- rep(0, nrow(df_test))
+binom_pred_test_sub[binom_probs_test_sub > .5] <-1
+table_sm_test_sub<-table(binom_pred_test_sub, y.test)
+```
+
+```{r}
+Class_Metrics(list(table_sm_test,table_sm_test_sub),c("Test - Smote","Test - Smote/Subset"))
+
+```
+
+We observe that we are actually able to make better predictions according both negative and positive class of our target variable by including only 21 variables!
+This means that we manage to eliminate some collinearity between the features and focus to the the ones that contribute the most to our classifier.
+
+We want to implement forward selection with BIC criterion too and compare the results.
+Note that in cases where best subset is implemented, there is no need of implementing forward or backward selection.
+
+```{r}
+fit2<-bess(X.train.sm, y.train.sm, family = "binomial",method="sequential",max.steps = 34)
+print(fit2)
+```
+
+```{r}
+results_forward<-data.frame(VarNum=1:34,Dev=fit2$deviance,AIC=fit2$AIC,BIC=fit2$BIC,EBIC=fit2$EBIC)
+
+par(mfrow=c(2,2)) 
+
+plot(x=results_forward$VarNum,y=results_forward$Dev, xlab="Number of Variables", ylab="deviance", type="l") 
+K0=which.min(results_forward$Dev) 
+points(K0, results_forward$Dev[K0], col="red",cex=2,pch=20)
+
+plot(x=results_forward$VarNum,y=results_forward$AIC,xlab="Number of Variables", ylab="AIC", type="l") 
+K1=which.min(results_forward$AIC) 
+points(K1, results_forward$AIC[K1], col="red",cex=2,pch=20)
+
+plot(x=results_forward$VarNum,y=results_forward$BIC,xlab="Number of Variables", ylab="BIC", type="l")
+K2=which.min(results_forward$BIC) 
+points(K2, results_forward$BIC[K2], col="red",cex=2,pch=20)
+
+plot(x=results_forward$VarNum,y=results_forward$EBIC,xlab="Number of Variables", ylab="EBIC", type="l") 
+K3=which.min(results_forward$EBIC) 
+points(K3, results_forward$EBIC[K3], col="red",cex=2,pch=20)
+
+```
+
+```{r}
+cat("Optimal Number of predictors according to deviance:",K0)
+cat("\nOptimal Number of predictors according to AIC:",K1)
+cat("\nOptimal Number of predictors according to BIC:",K2)
+cat("\nOptimal Number of predictors according to EBIC:",K3)
+
+```
+
+From the results printed above, combined to the information we get from the elbow phenomenon from the graph, we can see that 13 predictors might also be a good amount to use Therefore, we will try to model with 13 predictors and evaluate the results compared to the previous.
+
+```{r}
+coef_forward=data.frame(fit2$beta)
+coef_fw=coef_forward[names(coef_forward)=="X13"]
+coef_fw$Coeff=rownames(coef_fw)
+feature_fw=coef_fw[coef_fw$X13!=0,names(coef_fw)=="Coeff"]
+```
+
+```{r}
+X.train.sm.sub.fw<-X.train.sm[,names(X.train.sm) %in% feature_fw]
+train.dataset.fw<-cbind(X.train.sm.sub.fw,y.train.sm)
+names(train.dataset.fw)<-c(names(X.train.sm.sub.fw),"y")
+
+fit_sub.fw<-glm(y~.,data=train.dataset.fw,family=binomial)
+summary(fit_sub.fw)
+```
+
+```{r}
+X.test.sub.fw<-X.test[,names(X.test) %in% feature_fw]
+```
+
+```{r}
+binom_probs_test_sub_fw<-predict(fit_sub.fw, newdata =X.test.sub.fw,type = "response")
+binom_pred_test_sub_fw <- rep(0, nrow(df_test))
+binom_pred_test_sub_fw[binom_probs_test_sub_fw > .5] <-1
+table_sm_test_sub_fw<-table(binom_pred_test_sub_fw, y.test)
+```
+
+```{r}
+Class_Metrics(list(table_sm_test,table_sm_test_sub,table_sm_test_sub_fw),
+              c("Test - Smote","Test - Smote/Subset","Test - Smote/Subset Fw"))
+
+```
+
+We observe that by having 13 features in our dataset, we manage to achieve the better results thatn including 21 features!
+We print below the 13 features that were selected with forward selection.
+
+```{r}
+feature_fw
+```
+
+Note that these are the results with only one fitting.
+To make accurate conclusions, cross-validation should be used.
+
+We will apply the stepAIC function with both Forward and Backward algorithm, that searches for the best model according to the AIC criterion by adding or subtracting (depend on the case) predictors in each iteration with implementing Cross Validation.
+
+```{r}
+set.seed(123)
+df_train_sm_categ_mod<-df_train_sm_categ
+df_train_sm_categ_mod$Response_new[df_train_sm_categ_mod$Response=="1"]<-"Yes"
+df_train_sm_categ_mod$Response_new[df_train_sm_categ_mod$Response=="0"]<-"No"
+
+df_train_sm_categ_mod<-df_train_sm_categ_mod[,names(df_train_sm_categ_mod)!="Response"]
+
+ctrl <- trainControl(method = "repeatedcv", number = 5, repeats = 3, classProbs = TRUE, summaryFunction = twoClassSummary)
+
+fit <- train(Response_new~., data = df_train_sm_categ_mod, method = "glmStepAIC", trControl = ctrl, tuneLength = 1, trace = FALSE)
+
+summary(fit$finalModel)
+```
+
+We observe that the result is 22 predictors and they are the predictors that were selected with best subset selection (21 features), in addition to the Month of Customer February.
+From this section we agree that the best model is the one that was fitted with only 13 predictors.
+
+### 4.1.6. Examination of Interactions
+
+As our problem is a classification problem, and has the majority of its variables to be categorical, it is not that easy to identify any interaction a-priori without testing it to model.
+For now we will get the up-sampled dataset to test this.
+
+```{r}
+binom_fit_sm <- glm(Response ~ .,data = df_train_sm, family = binomial)
+summary(binom_fit_sm)
+```
+
+**Amount of Sweets with Teenhome** We proceed with the investigation of other correlations too.
+
+```{r}
+binom_fit_sm_inter <- glm(Response ~.+MntSweetProducts:Teenhome,data = df_train_sm_categ, family = binomial)
+summary(binom_fit_sm_inter)
+```
+
+We observe that the interaction term of having a teen at home and the amount purchased in sweets, is considered statistically significant in every known significance level.
+It is also important to mention that the individual variables are also statistically significant (teenhome \<0.001 sign level and amount of sweets in 0.1).
+Comparing this result with the prior, we can see that aount of sweets was not actually statistically significant and from the feature selection that we implemented in a prior stage it was always excluded from the best variables.
+
+```{r binom_fit_sm_2,echo=FALSE}
+#USING TRAINING DATASET
+binom_probs_sm_inter <- predict(binom_fit_sm_inter, type = "response")
+binom_pred_sm_inter <- rep(0, nrow(df_train_sm_categ))
+binom_pred_sm_inter[binom_probs_sm_inter > .5] <-1
+table_sm_inter<-table(binom_pred_sm_inter, df_train_sm_categ$Response)
+
+#USING TEST DATASET
+binom_probs_sm_inter_test<-predict(binom_fit_sm_inter, newdata =df_test[,!names(df_test)=="Response"],
+    type = "response"
+  )
+binom_pred_sm_inter_test <- rep(0, nrow(df_test))
+binom_pred_sm_inter_test[binom_probs_sm_inter_test > .5] <-1
+table_sm_test_inter<-table(binom_pred_sm_inter_test, df_test$Response)
+```
+
+```{r}
+Class_Metrics(list(table_sm_test,table_sm_test_inter) , c("Test - Smote", "Test - Interaction") )
+```
+
+We observe that the performance of the classifier with the interaction term is batter from our baseline model.
+
+**Marital Status with Kidhome**
+
+```{r}
+binom_fit_sm_inter2 <- glm(Response~.+MntSweetProducts:Teenhome+Kidhome:Marital_Status,
+                           data = df_train_sm_categ, family = binomial())
+summary(binom_fit_sm_inter2)
+```
+
+We observe that the interaction term of Marital Status and Number of kids at home, seem to contribute to our model.
+However, the interpretation of this interaction is different because in the Marital Status we actually observe the difference of each Marital Status with the Divorced Marital Status.
+
+```{r binom_fit_sm_2,echo=FALSE}
+#USING TRAINING DATASET
+binom_probs_sm_inter2 <- predict(binom_fit_sm_inter2, type = "response")
+binom_pred_sm_inter2 <- rep(0, nrow(df_train_sm_categ))
+binom_pred_sm_inter2[binom_probs_sm_inter2 > .5] <-1
+table_sm_inter2<-table(binom_pred_sm_inter2, df_train_sm_categ$Response)
+
+#USING TEST DATASET
+binom_probs_sm_inter_test2<-predict(binom_fit_sm_inter2, newdata =df_test[,!names(df_test)=="Response"],
+    type = "response"
+  )
+
+
+binom_pred_sm_inter_test2 <- rep(0, nrow(df_test))
+binom_pred_sm_inter_test2[binom_probs_sm_inter_test2 > .5] <-1
+table_sm_test_inter2<-table(binom_pred_sm_inter_test2, df_test$Response)
+```
+
+```{r}
+Class_Metrics(list(table_sm_test,table_sm_test_inter,table_sm_test_inter2) , 
+              c("Test - Smote", "Test - Interaction","Test - Interaction 2") )
+```
+
+From the classification metric matrix printed above, we can see that the results are improved.
+
+The tactic that we implemented above is not good, as we should apply interactions terms in case we have indication of existence. 
+However, in our case was very difficult to visualize this.
+However, we can observe that we have managed to identify some interaction between having a teen home and the amount of sweets purchased as well as the Martial Status with the Number of kids at home.
+
+```{r}
+library(sjPlot)
+plot_model(binom_fit_sm_inter2, transform = NULL, show.values = T, show.p = T, value.offset = 0.4)
+```
+
+**Feature Selection with Interaction Terms:**
+Note that by introducing to formula defined below the term Response_new~. + .^2 we were able to perform feature selection among all possible features and 1st degree interaction. This procedure was removed as it was very time-consuming and not a good approach in general. Thus we are implementing feature  selection with the interactions observed above.
+
+```{r}
+step.model.inter <- binom_fit_sm_inter2 %>% stepAIC(trace = FALSE,direction="both")
+length(coef(step.model.inter))-1
+```
+
+```{r}
+step.model.inter
+```
+
+```{r}
+df_train_sm_categ_mod<-df_train_sm_categ
+df_train_sm_categ_mod$Response_new[df_train_sm_categ_mod$Response=="1"]<-"Yes"
+df_train_sm_categ_mod$Response_new[df_train_sm_categ_mod$Response=="0"]<-"No"
+
+df_train_sm_categ_mod<-df_train_sm_categ_mod[,names(df_train_sm_categ_mod)!="Response"]
+
+formula <- Response_new~.+MntSweetProducts:Teenhome+Kidhome:Marital_Status
+
+ctrl <- trainControl(method = "repeatedcv", number = 5, repeats = 3, classProbs = TRUE, summaryFunction = twoClassSummary)
+
+fit <- train(formula, data = df_train_sm_categ_mod, method = "glmStepAIC", trControl = ctrl, tuneLength = 1, trace = FALSE)
+
+summary(fit$finalModel)
+```
+
+```{r}
+temp<-fit$finalModel
+names(temp$coefficients)
+```
+
+We should re-fit the model with the current selection of features in order to see how it performs in unknown data and compare them with the other models that we have created.
+
+```{r}
+features_inter<-names(temp$coefficients)
+features_inter2<-c("Marital_Status_Married","Marital_Status_Together",
+                   "Month_Customer_11","Month_Customer_12","Month_Customer_2",
+                   "Month_Customer_3","Month_Customer_5","Month_Customer9")
+
+```
+
+```{r}
+X.train.sm.inter<-X.train.sm[,(names(X.train.sm) %in% features_inter) | 
+                               (names(X.train.sm) %in% features_inter2)]
+
+train.dataset.inter<-cbind(X.train.sm.inter,y.train.sm)
+names(train.dataset.inter)<-c(names(X.train.sm.inter),"y")
+
+fit_sub.inter<-glm(y~.+Teenhome:MntSweetProducts+Kidhome:Marital_Status_Married+
+                  Kidhome:Marital_Status_Together,data=train.dataset.inter,family=binomial)
+summary(fit_sub.inter)
+```
+
+```{r}
+X.test.sub.inter<-X.test[,(names(X.test) %in% features_inter) | 
+                               (names(X.test) %in% features_inter2)]
+```
+
+```{r}
+binom_probs_test_sub_inter<-predict(fit_sub.inter, newdata =X.test.sub.inter,
+                                 type = "response")
+binom_pred_test_sub_inter <- rep(0, nrow(df_test))
+binom_pred_test_sub_inter[binom_probs_test_sub_inter > .5] <-1
+table_sm_test_sub_inter<-table(binom_pred_test_sub_inter, y.test)
+```
+
+```{r}
+Class_Metrics(list(table_sm_test,table_sm_test_sub,table_sm_test_sub_fw,
+                   table_sm_test_sub_inter),
+              c("Test - Smote","Test - Smote/Subset","Test - Smote/Subset Fw",
+                "Test - Smote/Subset/Interaction"))
+
+```
+
+We observe that the result is not actually better than the the smote with 13 features selected (according to the Forwaard Selection that we have implemented before).
+Therefore, we should not include this interactions in our model as they seem not to provide sufficiently enough information to make better predictions than the model with the 13 variables.
+
+### 4.1.7. Penalized logistic regression
+
+We have seen that with feature selection, we manage to reduce our predictors to only 13 compared to the 34 that we initially had in our dataset.
+We now proceed to the application of the penalized logistic regression, to see how it performs.
+
+#### 4.1.7.1. Ridge Penalty
+
+In order to identify the strength of the regularize in each case, we are going to use10-fold cross-validation.
+
+```{r}
+library(glmnet)
+
+y_train_ridge <- as.factor(y.train.sm)
+# standardizing numeric variables
+x_train_ridge <- X.train.sm %>% mutate_at(c(
+  "Year_Birth", "Income", "Kidhome", "Teenhome", "Recency", "MntWines", "MntFruits", "MntMeatProducts", "MntFishProducts", "MntSweetProducts", "MntGoldProds", "NumDealsPurchases", "NumWebPurchases", "NumCatalogPurchases", "NumStorePurchases", "NumWebVisitsMonth", "Education_Num", "Year_Customer"
+), ~(scale(.) %>% as.vector))
+x_train_ridge <- as.matrix(x_train_ridge)
+
+set.seed(64)
+cv_train <- cv.glmnet(x_train_ridge, y_train_ridge, type.measure="class", nfolds=10, family="binomial",
+                      standardize = FALSE,alpha=0)
+lambda <- cv_train$lambda.min
+lambda
+```
+
+We observe that lambda is approximately equal to 0, which basically means that no significant additional penality is taken into consideration and thus the result will be similar to the classical coefficients of logistic regression.
+However, we want to examine if there is any higher penalty that we can add.
+
+```{r}
+plot(cv_train)
+```
+
+We will try to find a larger lambda which will also give us a low misclassification error.
+
+```{r}
+lambda2<-exp(-3)
+lambda2
+```
+
+```{r}
+#fit the model
+ridge_logit <- glmnet(x_train_ridge, y_train_ridge, family="binomial", alpha=0,lambda=lambda,standardize = FALSE)
+
+#predicting with the training set
+SRL_pred_train <- predict(ridge_logit, x_train_ridge, type="class")
+
+confusion_matrix_train <- table(SRL_pred_train,y_train_ridge)
+Class_Metrics(list(table_sm,confusion_matrix_train) , c("Train - Smote","Train - Smote/Ridge") )
+```
+
+The penalty term is so low that the results are approximately the same with logistic regression.
+However, we have seen a slightly better results for the negative instances predictions.
+This is because Ridge tries to minimize the miss-classification error of every class in the target variables.
+
+However, in order to make accurate conclusions we should proceed an calculate the test metrics.
+
+```{r}
+x_test_ridge <- X.test %>% mutate_at(c(
+  "Year_Birth", "Income", "Kidhome", "Teenhome", "Recency", "MntWines", "MntFruits", "MntMeatProducts", "MntFishProducts", "MntSweetProducts", "MntGoldProds", "NumDealsPurchases", "NumWebPurchases", "NumCatalogPurchases", "NumStorePurchases", "NumWebVisitsMonth", "Education_Num", "Year_Customer"
+), ~(scale(.) %>% as.vector))
+x_test_ridge <- as.matrix(x_test_ridge)
+
+SRL_pred_test <- predict(ridge_logit, x_test_ridge, type="class", s=lambda)
+confusion_matrix_test <- table(SRL_pred_test,df_test$Response)
+Class_Metrics(list(table_sm_test,table_sm_test_sub_fw,confusion_matrix_test) , c("Test - Smote","Test - Smote/Fw 13","Test - Smote/Ridge") )
+```
+
+The test results for ridge are very close to the baseline model of logistic regression (expected as the penalty term is very low).
+
+We will also investigate the case were we select a slightly higher penalty (the one that we have mannually selected from the graph before).
+
+```{r}
+#fit the model
+ridge_logit2 <- glmnet(x_train_ridge, y_train_ridge, family="binomial", alpha=0,lambda=lambda2,standardize = FALSE)
+
+#predicting with the training set
+SRL_pred_train2 <- predict(ridge_logit2, x_train_ridge, type="class")
+
+confusion_matrix_train2 <- table(SRL_pred_train2,y_train_ridge)
+Class_Metrics(list(table_sm,confusion_matrix_train,confusion_matrix_train2) , c("Train - Smote","Train - Smote/Ridge - λ1","Train - Smote/Ridge - λ2") )
+```
+
+```{r}
+SRL_pred_test2 <- predict(ridge_logit2, x_test_ridge, type="class", s=lambda)
+confusion_matrix_test2 <- table(df_test$Response, SRL_pred_test2)
+Class_Metrics(list(table_sm_test,table_sm_test_sub_fw,confusion_matrix_test,confusion_matrix_test2) , 
+              c("Test - Smote","Test - Smote/Fw 13","Test - Smote/Ridge - λ1","Test - Smote/Ridge - λ2") )
+
+```
+
+For a slightly higher lambda we observe that we manage to achieve higher accuracy, specificity and precision than before.
+This is because the miss-claficication of negative instances is penalized too, and thus we make better predictions for negative instances.
+However, as we have stated multiple times before, this is not what we actually want for our problem.
+
+We will take a look to the coefficients resulted from the Ridge Model with the optimal lambda selected.
+As we have seen, the resulted metric where exactly the same.
+
+```{r}
+coef(ridge_logit)
+binom_sum_sm$coefficients
+
+```
+
+By comparing the resulted coefficients we observe thhat they are actually very similar.
+Something that we have expected as the penalty term is very low.
+
+#### 4.1.7.2. Lasso Penalty
+
+```{r}
+y_train_lasso <- as.factor(y.train.sm)
+x_train_lasso <- X.train.sm %>% mutate_at(c(
+  "Year_Birth", "Income", "Kidhome", "Teenhome", "Recency", "MntWines", "MntFruits", "MntMeatProducts", "MntFishProducts", "MntSweetProducts", "MntGoldProds", "NumDealsPurchases", "NumWebPurchases", "NumCatalogPurchases", "NumStorePurchases", "NumWebVisitsMonth", "Education_Num", "Year_Customer"
+), ~(scale(.) %>% as.vector))
+x_train_lasso <- as.matrix(x_train_lasso)
+
+set.seed(78)
+cv_train_l <- cv.glmnet(x_train_lasso, y_train_lasso, type.measure="class", nfolds=10, family="binomial",alpha=1,standardize = FALSE)
+lambda_lasso <- cv_train_l$lambda.min
+lambda_lasso
+```
+
+We have a very low penalty term for Lasso too.
+We should proceed with fitting the penalized logistic regression in order to see how it performs compared to the Ridge and the optimal model that was selected before.
+
+```{r}
+plot(cv_train_l)
+```
+
+```{r}
+#fit the model
+lasso_logit <- glmnet(x_train_lasso, y_train_lasso, family="binomial", alpha=1,lambda=lambda_lasso,standardize = FALSE)
+
+#predicting with the training set
+Lasso_pred_train <- predict(lasso_logit, x_train_lasso, type="class")
+
+confusion_matrix_train_lasso <- table(Lasso_pred_train,y_train_lasso)
+Class_Metrics(list(table_sm,confusion_matrix_train,confusion_matrix_train_lasso) , 
+              c("Train - Smote","Train - Smote/Ridge","Train - Smote/Lasso") )
+```
+
+```{r}
+Lasso_pred_test <- predict(lasso_logit, x_test_ridge, type="class")
+confusion_matrix_test_lasso <- table( Lasso_pred_test,df_test$Response)
+Class_Metrics(list(table_sm_test,table_sm_test_sub_fw,confusion_matrix_test,confusion_matrix_test_lasso) , 
+              c("Test - Smote","Test - Smote/Fw 13","Test - Smote/Ridge","Test - Smote/Lasso") )
+
+```
+
+It seems that lasso performs better than Ridge due to higher recall and F1 score.
+However, the result for the positive prediction instances is not sufficiently improved.
+
+We observe that lasso has managed to shrink some coefficients to zero, that are actually the variables tha considered less statistically significant.
+
+```{r}
+coef(lasso_logit)
+
+```
+
+
+**Final Model:**
+
+Therefore, our selected model through the whole procedure of the Logistic Regression implementation is the one that was fitted with 13 Features coming from the Forward selection accorsing to both BIC and AIC.
+Note that 13 features were not the optimal.
+
+```{r}
+library(jtools)
+summ(fit_sub.fw)
+```
+
+
+```{r}
+summary(fit_sub.fw)
+
+```
+
+```{r}
+plot_model(fit_sub.fw, transform = NULL, show.values = T, show.p = T, value.offset = 0.4)
+
+```
+
+
+
+### 4.1.7. PCA
+
+#### 4.1.7.1 Using all available features
+
+As we have seen before, we are dealing with Multicollinearity in our problem.
+Another way of reducing this phenomenon is by performing PCA, as the resulted components are orthogonal and uncorrelated.
+However, as we have observed before, the majoirty of our features are distinct/categorical and as PCA is a rotation of data from one coordinate system to another, continues variables are needed.
+
+Therefore, even if PCA is possible to be implemented when we apply one-hot encoding in our dataset (without getting an error in the code), this should not be done.
+
+Nevertheless, for educational purposes, we will implement PCA.
+We will use the scaled and up-sampled training dataset in order to ensure that all variables have equal importance in the PCA, regardless of their scale or variance.
+This can help prevent variables with high variances from dominating the principal components and can improve the accuracy of the resulting model.
+
+```{r}
+X.train.std.sm<-scale(X.train.sm)
+
+```
+
+```{r}
+pca <- princomp(X.train.std.sm, cor=T)
+```
+
+```{r}
+pca
+```
+
+```{r}
+pc.comp <- pca$scores
+```
+
+Even if we do not have a clear separation of our dataset, we have an indication from the 3 principal components plotted below.
+
+```{r}
+pc.comp1 <- pc.comp[,1] 
+pc.comp2 <- pc.comp[,2]
+plot(pc.comp1, pc.comp2, type="n")
+points(pc.comp1[y.train.sm==0], pc.comp2[y.train.sm==0], cex=0.5, col="blue")
+points(pc.comp1[y.train.sm==1], pc.comp2[y.train.sm==1], cex=0.5, col="red")
+
+pc.comp3 <- pc.comp[,3]
+plot(pc.comp1, pc.comp3, type="n")
+points(pc.comp1[y.train.sm==0], pc.comp3[y.train.sm==0], cex=0.5, col="blue")
+points(pc.comp1[y.train.sm==1], pc.comp3[y.train.sm==1], cex=0.5, col="red")
+
+plot(pc.comp3, pc.comp2, type="n")
+points(pc.comp3[y.train.sm==0], pc.comp2[y.train.sm==0], cex=0.5, col="blue")
+points(pc.comp3[y.train.sm==1], pc.comp2[y.train.sm==1], cex=0.5, col="red")
+
+```
+
+We proceed by printing the resulted loading drom the pca.
+Loadings basically indicate correlation between the components and the independed variables.
+
+```{r}
+loadings<-pca$loadings
+loadings
+```
+
+```{r}
+biplot(pc.comp[, c(1,3)], loadings[, 1:2], cex=0.7)
+```
+
+```{r}
+scaling <- 5
+textNudge <- 1
+ plot(pc.comp1, pc.comp1, xlab='PCA 1', ylab='PCA 2', type='n', asp=1, las=1,col="blue")
+ 
+arrows(0, 0, loadings[, 1]* scaling, loadings[, 2]* scaling, length=0.1, angle=20, col='red')
+ 
+text(loadings[, 1]*scaling*textNudge, loadings[, 2]*scaling*textNudge, rownames(loadings), col='black', cex=0.7)
+```
+
+**Scree plot:** Scree plot indicates the variance explained by each principal component.
+
+```{r}
+var_expl_df<-data.frame(matrix(NA,nrow=34,ncol=2))
+names(var_expl_df)<-c("Component","Variance")
+var_expl_df$Component<-1:34
+var_expl_df$Variance<-pca$sdev^2 / sum(pca$sdev^2)
+
+ggplot(var_expl_df,aes(x=var_expl_df$Component,y=var_expl_df$Variance)) + 
+  geom_line() + 
+  xlab("Principal Component") + 
+  ylab("Variance Explained") +
+  ggtitle("Scree Plot")
+```
+
+#### 4.1.7.2 Getting insights about different feature categories
+
+We will now separate our features into categories and apply PCA in each of them to see which group will enable us to identify clusters in our data.
+
+```{r}
+personal_data<-c("Year_Birth","Income","Kidhome","Teenhome","Education_Num","Marital_Status_Married",
+                 "Marital_Status_Single","Marital_Status_Together","Marital_Status_Widow")
+
+customer_data <- names(X.train.sm)[!(names(X.train.sm) %in% personal_data)]
+```
+
+**Personal Data:**
+
+```{r}
+X.personal<-X.train.std.sm[,personal_data]
+X.customer<-X.train.std.sm[,customer_data]
+```
+
+```{r}
+pca_personal <- princomp(X.personal, cor=T)
+pca_personal
+```
+
+```{r}
+pc.comp1.pers <- pca_personal$scores[,1] 
+pc.comp2.pers <- pca_personal$scores[,2]
+pc.comp3.pers <- pca_personal$scores[,3] 
+pc.comp4.pers <- pca_personal$scores[,4] 
+pc.comp5.pers <- pca_personal$scores[,5] 
+
+
+plot(pc.comp1.pers, pc.comp2.pers, type="n")
+points(pc.comp1.pers[y.train.sm==0], pc.comp2.pers[y.train.sm==0], cex=0.5, col="blue")
+points(pc.comp1.pers[y.train.sm==1], pc.comp2.pers[y.train.sm==1], cex=0.5, col="red")
+
+plot(pc.comp1.pers, pc.comp3.pers, type="n")
+points(pc.comp1.pers[y.train.sm==0], pc.comp3.pers[y.train.sm==0], cex=0.5, col="blue")
+points(pc.comp1.pers[y.train.sm==1], pc.comp3.pers[y.train.sm==1], cex=0.5, col="red")
+
+plot(pc.comp1.pers, pc.comp4.pers, type="n")
+points(pc.comp1.pers[y.train.sm==0], pc.comp4.pers[y.train.sm==0], cex=0.5, col="blue")
+points(pc.comp1.pers[y.train.sm==1], pc.comp4.pers[y.train.sm==1], cex=0.5, col="red")
+
+plot(pc.comp3.pers, pc.comp4.pers, type="n")
+points(pc.comp3.pers[y.train.sm==0], pc.comp4.pers[y.train.sm==0], cex=0.5, col="blue")
+points(pc.comp3.pers[y.train.sm==1], pc.comp4.pers[y.train.sm==1], cex=0.5, col="red")
+```
+
+**Customer Data:**
+
+```{r}
+pca_cust <- princomp(X.customer, cor=T)
+pca_cust
+```
+
+```{r}
+pc.comp1.cust <- pca_cust$scores[,1] 
+pc.comp2.cust <- pca_cust$scores[,2]
+pc.comp3.cust <- pca_cust$scores[,3] 
+pc.comp4.cust <- pca_cust$scores[,4] 
+pc.comp5.cust <- pca_cust$scores[,5] 
+
+
+plot(pc.comp1.cust, pc.comp2.cust, type="n")
+points(pc.comp1.cust[y.train.sm==0], pc.comp2.cust[y.train.sm==0], cex=0.5, col="blue")
+points(pc.comp1.cust[y.train.sm==1], pc.comp2.cust[y.train.sm==1], cex=0.5, col="red")
+
+plot(pc.comp1.cust, pc.comp3.cust, type="n")
+points(pc.comp1.cust[y.train.sm==0], pc.comp3.cust[y.train.sm==0], cex=0.5, col="blue")
+points(pc.comp1.cust[y.train.sm==1], pc.comp3.cust[y.train.sm==1], cex=0.5, col="red")
+
+plot(pc.comp1.pers, pc.comp4.cust, type="n")
+points(pc.comp1.cust[y.train.sm==0], pc.comp4.cust[y.train.sm==0], cex=0.5, col="blue")
+points(pc.comp1.cust[y.train.sm==1], pc.comp4.cust[y.train.sm==1], cex=0.5, col="red")
+
+plot(pc.comp1.cust, pc.comp5.cust, type="n")
+points(pc.comp1.cust[y.train.sm==0], pc.comp5.cust[y.train.sm==0], cex=0.5, col="blue")
+points(pc.comp1.cust[y.train.sm==1], pc.comp5.cust[y.train.sm==1], cex=0.5, col="red")
+```
+
+```{r}
+plot(pc.comp2.cust, pc.comp3.cust, type="n")
+points(pc.comp2.cust[y.train.sm==0], pc.comp3.cust[y.train.sm==0], cex=0.5, col="blue")
+points(pc.comp2.cust[y.train.sm==1], pc.comp3.cust[y.train.sm==1], cex=0.5, col="red")
+
+
+plot(pc.comp2.cust, pc.comp4.cust, type="n")
+points(pc.comp2.cust[y.train.sm==0], pc.comp4.cust[y.train.sm==0], cex=0.5, col="blue")
+points(pc.comp2.cust[y.train.sm==1], pc.comp4.cust[y.train.sm==1], cex=0.5, col="red")
+
+```
+
+## 4.2. LDA & QDA
+
+For LDA and QDA we have an assumption that our independent variables follow the normal distrbution.
+As the majority of our features refer to categorical or discrete variables in general, the normality assumption does not hold.
+Thus, we cannot implement these 2 methods.
+
+## 4.3. Naive Bayes
+
+On the other hand, Naive Bayes can be actually used in cases were we have categorical or discrete variables, as the assumption behind the distribution of each variable is more "flexible".
+
+```{r warning=FALSE}
+
+nb_fit_sm <- naive_bayes(Response ~ ., data = df_train_sm,usekernel=T)
+
+nb_pred_sm_train <- predict(nb_fit_sm, df_train_sm)
+
+table_nb_train <- table(nb_pred_sm_train, df_train_sm$Response)
+plot_conf_matrix(table_nb_train)
+
+```
+
+```{r warning=FALSE}
+nb_pred_sm_test <- predict(nb_fit_sm, df_test,usekernel=T)
+
+table_nb_test <- table(nb_pred_sm_test, df_test$Response)
+plot_conf_matrix(table_nb_test)
+```
+
+```{r}
+Class_Metrics( list(table_nb_train,table_nb_test), c("NB - Train","NB - Test") )
+```
+
+From theory, Naive Bayes assumes in-dependency between the predictors.
+However, as we have seen before, we have some predictors that are highly correlated.
+Therefore, for now we will remove every amount of product purchase, except meat and Gold in order to eliminate the correlation between the amount of products purchased and re-fit the model in order to see how it performs.
+
+```{r}
+products<-c("MntWines","MntFruits","MntFishProducts","MntSweetProducts")
+df_naive_sm<-df_train_sm[, !(names(df_train_sm) %in% products)]
+```
+
+```{r}
+nb_fit_sm2 <- naive_bayes(Response ~ ., data = df_naive_sm,usekernel=T)
+
+nb_pred_sm_train2 <- predict(nb_fit_sm2, df_naive_sm)
+
+table_nb_train2 <- table(nb_pred_sm_train2, df_naive_sm$Response)
+```
+
+We evaluate now on test dataset too, to see how our model performs with unknown data.
+
+```{r}
+nb_pred_test2 <- predict(nb_fit_sm2, df_train[,!(names(df_train) %in% products)])
+
+table_nb_test2 <- table(nb_pred_test2, df_train$Response)
+#plot_conf_matrix(table_nb_test2)
+Class_Metrics( list(table_nb_train2,table_nb_test2), c("NB - Reduced Train","NB - Reduced Test") )
+```
+
+The results are much better compared to our original Naive Bayes model in accordance of all the available metrics.
+
+We will try to eliminate correlation from the other categorical variables too.
+
+1.  Polychoric correlation measures agreement between multiple raters for ordinal variables (sometimes called "ordered-category" data). Ordinal variables can be placed in order, but can't be divided or multiplied.
+
+```{r}
+polychor(df_mod$Education_Num,df_mod$Kidhome)
+polychor(df_mod$Education_Num,df_mod$Teenhome)
+polychor(df_mod$Kidhome,df_mod$Teenhome)
+```
+
+No significant correlation iwas identified between this
+
+2.  Correlation between categorical and Continuous variables - point biserial correlation
+
+```{r}
+cor.test(X.train.sm$Education_Num, X.train.sm$Income)
+```
+
+We see that we reject the null hypothesis of not having correlation in significance level of 0.05.
+We also observe that the calculated point-biserial correlation coefficient is 0.09662002 and due to the fact that is positive, it means that when Education level increases by 1 that the variable y tends to take on higher values compared to when the variable Education stays at the same level.
+
+```{r}
+# 
+# cor.test(X.train.sm$Marital_Status_Married, X.train.sm$Income)
+# cor.test(X.train.sm$Marital_Status_Single, X.train.sm$Income)
+# cor.test(X.train.sm$Marital_Status_Together, X.train.sm$Income)
+# cor.test(X.train.sm$Marital_Status_Widow, X.train.sm$Income)
+
+```
+
+We do not identify any correlation between marital status and income.
+
+Another thing we should take into consideration here is to scale the Income Variable.
+We know that for continues variables, the default assumption is the normal distribution.
+We have already seen in the exploratory phase that income is positively skewed.
+Therefore, we should scale it using standardize scaler.
+
+```{r}
+df_naive_sm3<-df_naive_sm
+
+#For robust scaling - not implemented
+#whisk<-boxplot(df_naive_sm3$Income,plot=FALSE)$stats[c(1,5)]
+#df_naive_sm3<-df_naive_sm3[df_naive_sm3$Income>=whisk[1] & df_naive_sm3$Incom<=whisk[2],]
+
+df_naive_sm3$Income<-(df_naive_sm3$Income-mean(df_naive_sm3$Income))/sd(df_naive_sm3$Income)
+df_naive_sm3$MntMeatProducts<-(df_naive_sm3$MntMeatProducts-mean(df_naive_sm3$MntMeatProducts))/sd(df_naive_sm3$MntMeatProducts)
+df_naive_sm3$MntGoldProds<-(df_naive_sm3$MntGoldProds-mean(df_naive_sm3$MntGoldProds))/sd(df_naive_sm3$MntGoldProds)
+
+
+
+
+```
+
+```{r}
+nb_fit_sm3 <- naive_bayes(Response ~ ., data = df_naive_sm3,usekernel=T)
+
+nb_pred_sm_train3 <- predict(nb_fit_sm3, df_naive_sm3)
+
+table_nb_train3 <- table(nb_pred_sm_train3, df_naive_sm3$Response)
+#plot_conf_matrix(table_nb_train3)
+Class_Metrics( list(table_nb_train3), c("Removing Correlation - Scaling") )
+```
+
+```{r warning=FALSE,echo=FALSE}
+df_test3<-df_test[,!(names(df_test) %in% products)]
+
+df_test3$Income<-(df_test3$Income-mean(df_test3$Income))/sd(df_test3$Income)
+df_test3$MntMeatProducts<-(df_test3$MntMeatProducts-mean(df_test3$MntMeatProducts))/sd(df_test3$MntMeatProducts)
+df_test3$MntGoldProds<-(df_test3$MntGoldProds-mean(df_test3$MntGoldProds))/sd(df_test3$MntGoldProds)
+
+
+
+nb_pred_test3 <- predict(nb_fit_sm3,df_test3)
+
+table_nb_test3 <- table(nb_pred_test3, df_test3$Response)
+plot_conf_matrix(table_nb_test3)
+Class_Metrics( list(table_nb_test3), c("Removing Correlation - Test") )
+```
+
+We actually observe that the positive predictions have now increased a lot, and as a result we manage to achieve a higher recall.
+On the other hand, we have a very low precicion.
+Precision in this case is equal to 0.257, which means that in every yes predictions that we make, approximatley one is correct.
+This actually indicates poor performance of our classifier.
+
+We will now try to find the optimal hyperparameter selection for the bayes classifier, in order to see if this will help with the performance.
+
+```{r}
+products<-c("MntWines","MntFruits","MntFishProducts","MntSweetProducts")
+X.naive<-X.train.sm[, !(names(X.train.sm) %in% products)]
+```
+
+```{r}
+#library(caret)
+library(e1071)
+
+
+# Create a grid of hyperparameters to search over
+tuneGrid <- expand.grid(laplace = seq(0, 1, by = 0.1), usekernel = c(TRUE, FALSE), adjust =TRUE)
+
+# Set up your cross-validation parameters
+ctrl <- trainControl(method = "repeatedcv", number = 5, repeats = 3, classProbs = TRUE, summaryFunction = twoClassSummary)
+
+df_naive_sm3$Response_New[df_naive_sm3$Response=="1"]<-"Yes"
+df_naive_sm3$Response_New[df_naive_sm3$Response=="0"]<-"No"
+df_naive_sm3<-df_naive_sm3[,names(df_naive_sm3)!="Response"]
+
+# Train your multinomial Naive Bayes model with hyperparameter tuning using caret
+fit <- train(Response_New~., data = df_naive_sm3, method = "naive_bayes", trControl = ctrl, tuneGrid = tuneGrid, metric = "ROC")
+
+# Print the best hyperparameters and associated ROC value
+print(fit)
+```
+
+```{r}
+nb_fit_sm2 <- naive_bayes(Response ~ ., data = df_naive_sm,usekernel=FALSE,fL=1)
+ 
+nb_pred_sm_train2 <- predict(nb_fit_sm2, df_naive_sm)
+
+table_nb_train2 <- table(nb_pred_sm_train2, df_naive_sm$Response)
+plot_conf_matrix(table_nb_train2)
+ Class_Metrics( list(table_nb_train2), c("Removing Correlation") )
+```
+
+```{r}
+nb_pred_test4 <- predict(nb_fit_sm2, df_train[,!(names(df_train) %in% products)])
+
+table_nb_test4 <- table(nb_pred_test4, df_train$Response)
+plot_conf_matrix(table_nb_test4)
+Class_Metrics( list(table_nb_test4), c("Removing Correlation - Test") )
+```
+
+## 4.4 K-NN Classifier
+
+### 4.4.1. Initial Dataset
+
+For the k-nn classifier we will use the initial dataset without using up-sampled techniques.
+This will enable us to search for patterns to the actual data by eliminating the synthetic data.
+
+We should first prepare the training dataset by creating the dummy variables.
+
+```{r}
+X.train<-df_train[,names(df_train)!="Response"]
+
+dummy_col<-c("Marital_Status","Month_Customer","Complain")
+
+X.train<-dummy_cols(X.train, select_columns =dummy_col,
+                       remove_first_dummy = TRUE)
+y.train<-rep(0,nrow(df_train))
+y.train[df_train$Response=="1"]<-1
+
+X.train<-X.train[,!(names(X.train) %in% dummy_col)]
+```
+
+By definition of the k-nn algorithm, a selected distance (usually the Euclidean) is used to calculate the similarity between the observed points and the the ones we would like to estimate.
+As distance is very sensitive to the range of values that every feature has, we should scale our data first and then proceed with the implimentation of this algorithm.
+
+For the scaling, we will first use the standard scaler as we want all the variables to have expected value 0 and sd equal to 1.
+
+```{r}
+X.train.std<-scale(X.train)
+X.test.std<-scale(X.test)
+```
+
+```{r}
+set.seed (144)
+
+knn.pred <- knn (X.train.std, X.test.std, y.train , k = 1)
+knn1<-table (knn.pred ,y.test)
+
+
+
+Class_Metrics( list(knn1), c("1") )
+```
+
+```{r}
+#k=2
+knn.pred2 <- knn (X.train.std, X.test.std, y.train , k = 2)
+knn2<-table (knn.pred2 ,y.test)
+
+#k=3
+knn.pred3 <- knn (X.train.std, X.test.std, y.train , k = 3)
+knn3<-table (knn.pred3 ,y.test)
+
+#k=4
+knn.pred4 <- knn (X.train.std, X.test.std, y.train , k = 4)
+knn4<-table (knn.pred4 ,y.test)
+
+#k=5
+knn.pred5 <- knn (X.train.std, X.test.std, y.train , k = 5)
+knn5<-table (knn.pred5 ,y.test)
+
+knn_table<-list(knn1,knn2,knn3,knn4,knn5)
+
+knn_results<-Class_Metrics(knn_table, 1:5)
+
+names(knn_results)[names(knn_results)=="Name"]<-"Neighbors"
+```
+
+Results in tabular form for k of 1 up to 5
+
+```{r}
+knn_results
+```
+
+Graphical Representation of the results.
+
+```{r}
+
+plot1<-ggplot(data=knn_results, aes(x=Neighbors, y=Accuracy)) +
+  geom_line()+ geom_point()+ ggtitle("Accuracy")
+
+plot2<-ggplot(data=knn_results, aes(x=Neighbors, y=Recall)) +
+  geom_line()+ geom_point()+ ggtitle("Recall")
+
+plot3<-ggplot(data=knn_results, aes(x=Neighbors, y=Precision)) +
+  geom_line()+ geom_point()+ ggtitle("Precision")
+
+plot4<-ggplot(data=knn_results, aes(x=Neighbors, y=Specificity)) +
+  geom_line()+ geom_point()+ ggtitle("Specificity")
+
+plot5<-ggplot(data=knn_results, aes(x=Neighbors, y=F1_score)) +
+  geom_line()+ geom_point()+ ggtitle("F1_score")
+
+grid.arrange(plot1,plot2,plot3,plot4,plot5,ncol=2)
+
+```
+
+We see that as the number of neighbors increase we are able to identify better the negative instances of our dataset.
+This can bee seen from the Specificity metric.
+Accuracy metric is also increasing as the k increases and actually tends to the classifier that classifies everything as negative (see below).
+
+```{r}
+Accuracy(rep(0,length(y.test)),y.test)
+```
+
+We will try to see how if tuning k will actually help.
+
+```{r}
+training_control <- trainControl(method = "repeatedcv",
+                                 summaryFunction = twoClassSummary,
+                                 classProbs = TRUE,
+                                 number = 10,
+                                 repeats = 10)
+```
+
+```{r}
+set.seed(144)
+temp<-data.frame(X.train.std)
+temp_y1<-df_train$Response
+temp_y<-rep(NA,length(temp_y1))
+temp_y[temp_y1=="1"]<-"Yes"
+temp_y[temp_y1=="0"]<-"No"
+knn_cv <- train(x=temp,y=temp_y,
+                method = "knn",
+                trControl = training_control,
+                metric = "Accuracy",
+                tuneGrid = data.frame(k = seq(1,20,by = 1)))
+knn_cv
+```
+
+Note that the classes here are the opposite than the ones we calculated.
+Therefore Spec is our Recall and Sens is Specicifity.
+Indeed as the number of k increases, we actually tend to the all 0 classifier.
+
+### 4.4.2. Up-Sampled Dataset using smote
+
+We are now going to perform the same procedure with the up-sampled dataset.
+
+```{r}
+X.train.std.sm<-scale(X.train.sm)
+
+set.seed (144)
+knn.pred <- knn (X.train.std.sm, X.test.std, y.train.sm , k = 1)
+knn1<-table (knn.pred ,y.test)
+
+#k=2
+knn.pred2 <- knn (X.train.std.sm, X.test.std, y.train.sm , k = 2)
+knn2<-table (knn.pred2 ,y.test)
+
+#k=3
+knn.pred3 <- knn (X.train.std.sm, X.test.std, y.train.sm , k = 3)
+knn3<-table (knn.pred3 ,y.test)
+
+#k=4
+knn.pred4 <- knn (X.train.std.sm, X.test.std, y.train.sm , k = 4)
+knn4<-table (knn.pred4 ,y.test)
+
+#k=5
+knn.pred5 <- knn (X.train.std.sm, X.test.std, y.train.sm , k = 5)
+knn5<-table (knn.pred5 ,y.test)
+
+knn_table_sm<-list(knn1,knn2,knn3,knn4,knn5)
+
+knn_results2<-Class_Metrics( knn_table_sm,1:5 )
+
+knn_results2
+
+```
+
+
+```{r}
+names(knn_results2)[names(knn_results2)=="Name"]<-"Neighbors"
+
+```
+
+```{r}
+
+plot1<-ggplot(data=knn_results2, aes(x=Neighbors, y=Accuracy)) +
+  geom_line()+ geom_point()+ ggtitle("Accuracy")
+
+plot2<-ggplot(data=knn_results2, aes(x=Neighbors, y=Recall)) +
+  geom_line()+ geom_point()+ ggtitle("Recall")
+
+plot3<-ggplot(data=knn_results2, aes(x=Neighbors, y=Precision)) +
+  geom_line()+ geom_point()+ ggtitle("Precision")
+
+plot4<-ggplot(data=knn_results2, aes(x=Neighbors, y=Specificity)) +
+  geom_line()+ geom_point()+ ggtitle("Specificity")
+
+plot5<-ggplot(data=knn_results2, aes(x=Neighbors, y=F1_score)) +
+  geom_line()+ geom_point()+ ggtitle("F1_score")
+
+grid.arrange(plot1,plot2,plot3,plot4,plot5,ncol=2)
+
+```
+
+
+Results are indeed improved compared to the non up-sampled data.
+Note that now we have a ratio of 2:1.
+Meaning that we still have the majority of our points related to the negative category.
+We proceed by tunning hyperparameters to see how the results vary according to the variablity of k.
+
+```{r}
+set.seed(144)
+temp<-data.frame(X.train.std.sm)
+temp_y1<-df_train_sm$Response
+temp_y<-rep(NA,length(temp_y1))
+temp_y[temp_y1=="1"]<-"Yes"
+temp_y[temp_y1=="0"]<-"No"
+knn_cv_sm <- train(x=temp,y=temp_y,
+                method = "knn",
+                trControl = training_control,
+                metric = "Accuracy",
+                tuneGrid = data.frame(k = seq(1,20,by = 1)))
+knn_cv_sm
+```
+
+### 4.4.2. Downsampling technique
+
+```{r}
+library(groupdata2)
+```
+
+```{r}
+set.seed(442)
+df_train_down<-downsample(df_train,
+  cat_col = "Response",
+  id_method = "distributed"
+)
+```
+
+```{r}
+nrow(df_train_down[df_train_down$Response=="1",])/nrow(df_train_down)
+```
+
+```{r}
+X.train.down<-df_train_down[,names(df_train_down)!="Response"]
+
+dummy_col<-c("Marital_Status","Month_Customer","Complain")
+
+X.train.down<-dummy_cols(X.train.down, select_columns =dummy_col,
+                       remove_first_dummy = TRUE)
+y.train.down<-rep(0,nrow(df_train_down))
+y.train.down[df_train_down$Response=="1"]<-1
+
+X.train.down<-X.train.down[,!(names(X.train.down) %in% dummy_col)]
+```
+
+```{r}
+X.train.std.down<-scale(X.train.down)
+
+set.seed (144)
+knn.pred <- knn (X.train.std.down, X.test.std, y.train.down , k = 1)
+knn1<-table (knn.pred ,y.test)
+
+#k=2
+knn.pred2 <- knn (X.train.std.down, X.test.std, y.train.down , k = 2)
+knn2<-table (knn.pred2 ,y.test)
+
+#k=3
+knn.pred3 <- knn (X.train.std.down, X.test.std, y.train.down , k = 3)
+knn3<-table (knn.pred3 ,y.test)
+
+#k=4
+knn.pred4 <- knn (X.train.std.down, X.test.std, y.train.down , k = 4)
+knn4<-table (knn.pred4 ,y.test)
+
+#k=5
+knn.pred5 <- knn (X.train.std.down, X.test.std, y.train.down , k = 5)
+knn5<-table (knn.pred5 ,y.test)
+
+knn_table_down<-list(knn1,knn2,knn3,knn4,knn5)
+
+Class_Metrics( knn_table_down,1:5 )
+
+```
+
+```{r}
+set.seed(144)
+temp<-data.frame(X.train.std.down)
+temp_y1<-df_train_down$Response
+temp_y<-rep(NA,length(temp_y1))
+temp_y[temp_y1=="1"]<-"Yes"
+temp_y[temp_y1=="0"]<-"No"
+knn_cv_down <- train(x=temp,y=temp_y,
+                method = "knn",
+                trControl = training_control,
+                metric = "Accuracy",
+                tuneGrid = data.frame(k = seq(1,25,by = 1)))
+knn_cv_down
+```
+
+```{r}
+results_down<-data.frame(knn_cv_down$results)
+
+plot1<-ggplot(data=results_down, aes(x=k, y=ROC)) +
+  geom_line()+ geom_point()+ ggtitle("ROC")
+
+plot2<-ggplot(data=results_down, aes(x=k, y=Sens)) +
+  geom_line()+ geom_point()+ ggtitle("Specificity")
+
+plot3<-ggplot(data=results_down, aes(x=k, y=Spec)) +
+  geom_line()+ geom_point()+ ggtitle("Sensitivity")
+
+plot1
+plot2
+plot3
+```
+
+## 4.5. Tree Structures
+
+Our team decided to implement some of the tree structured models.
+Our team only used to show how well Logistic Regression is and veirfy our results in the feature importance phase.
+
+### 4.5.1 Desicion tree
+
+Hyperparameter tuning on Decision trees
+
+```{r}
+# Load the required libraries
+library(caret)
+library(rpart)
+
+# Define the training control object for cross-validation
+train_control <- trainControl(
+  method = "cv",
+  number = 5,
+  verboseIter = FALSE,
+  classProbs = TRUE,
+  summaryFunction = twoClassSummary
+)
+
+# Create a grid of hyperparameters to tune
+tune_grid <- expand.grid(
+  cp = seq(0.001, 0.1, length.out = 10)
+)
+
+# Rename the levels of the Response variable to valid R variable names
+levels(df_train_sm$Response) <- make.names(levels(df_train_sm$Response))
+
+# Train the decision tree using cross-validation and hyperparameter tuning
+tree_fit_sm <- train(Response ~ ., data = df_train_sm, method = "rpart", trControl = train_control, tuneGrid = tune_grid, metric = "Recall")
+
+# Print the summary of the trained tree
+tree_fit_sm$finalModel$variable.importance
+
+# Print the recall value from the cross-validation results
+recall_results <- tree_fit_sm$results[tree_fit_sm$results$metric == "Recall",]
+print(recall_results)
+
+# Display the best model's hyperparameters
+best_params <- tree_fit_sm$bestTune
+print(best_params)
+
+# Train the final model using the best hyperparameters
+final_tree_fit <- rpart(Response ~ ., data = df_train_sm, method = "class", control = rpart.control(cp = best_params$cp))
+
+```
+
+cp 0.001 is the best for this task
+
+```{r}
+# Make predictions on the training data using the final model
+tree_pred_sm_train <- predict(final_tree_fit, df_train_sm, type = "class")
+
+# Create the confusion matrix and plot it for the training data
+table_sm_train <- table(tree_pred_sm_train, df_train_sm$Response)
+plot_conf_matrix(table_sm_train)
+
+```
+
+```{r}
+
+df_test_mod2 = as.data.frame(df_test_mod)
+# Rename the levels of the Response variable to valid R variable names
+levels(df_test_mod2$Response) <- make.names(levels(df_test_mod2$Response))
+
+# USING TEST DATASET
+# Make predictions on the test data using the final model
+tree_pred_sm_test <- predict(final_tree_fit, df_test_mod2, type = "class")
+
+# Create the confusion matrix and plot it for the test data
+table_tree_test <- table(tree_pred_sm_test, df_test_mod2$Response)
+plot_conf_matrix(table_tree_test)
+```
+
+```{r Class_Metrics_tree,echo=FALSE}
+
+# Evaluate the models
+Class_Metrics(list(table_sm_test_sub_fw, table_tree_test), c('Logistic Regression 13 Features ', 'Decision Tree'))
+
+```
+
+### 4.5.2 Random forest
+
+```{r}
+# Define the training control object for cross-validation
+train_control <- trainControl(
+  method = "cv",
+  number = 5,
+  verboseIter = FALSE,
+  classProbs = TRUE,
+  summaryFunction = twoClassSummary
+)
+
+# Define the tuning grid
+tune_grid <- expand.grid(
+  mtry = seq(1, ncol(df_train_sm) - 1, 6),
+  splitrule = "gini",
+  min.node.size = c(1, 5, 10, 15)
+)
+
+# Train the Random Forest model using cross-validation
+rf_fit_sm <- train(
+  Response ~ .,
+  data = df_train_sm,
+  method = "ranger",
+  trControl = train_control,
+  tuneGrid = tune_grid,
+  importance = "permutation",
+  num.trees = 100,
+  metric = "Recall"
+)
+
+# Print the best model parameters
+print(rf_fit_sm$bestTune)
+
+# Make predictions on the training data
+rf_pred_sm_train <- predict(rf_fit_sm, df_train_sm)
+
+
+# Create the confusion matrix and plot it
+table_rf_train <- table(rf_pred_sm_train, df_train_sm$Response)
+plot_conf_matrix(table_rf_train)
+```
+
+```{r}
+
+# Make predictions on the test data
+rf_pred_sm_test <- predict(rf_fit_sm, df_test_mod)
+
+# Create the confusion matrix and plot it
+table_rf_test <- table(rf_pred_sm_test, df_test_mod$Response)
+plot_conf_matrix(table_rf_test)
+```
+
+```{r Class_Metrics_tree,echo=FALSE}
+# Update the tables and names list
+tables <- list(table_sm_test_sub_fw, table_tree_test, table_rf_test)
+names <- c('Logistic Regression', 'Decision Tree', "Random Forest")
+Class_Metrics(tables, names)
+
+```
+
+### 4.5.3 Gradient Boosting Machines
+
+```{r}
+
+# Set up the parameter grid for cross-validation
+param_grid <- expand.grid(
+  n.trees = c(300),
+  interaction.depth = c(4),
+  shrinkage = c(0.1, 0.01),
+  n.minobsinnode = c( 30)
+)
+# Train the Gradient Boosting model using cross-validation to tune the parameters
+gbm_fit_sm <- train(
+  Response ~ .,
+  data = df_train_sm,
+  method = "gbm",
+  trControl = train_control,
+  tuneGrid = param_grid,
+  verbose = FALSE,
+   metric = "Recall"
+)
+
+# Make predictions on the training data
+gbm_pred_sm_train <- predict(gbm_fit_sm, df_train_sm)
+
+levels(df_test$Response) <- c(0,1)
+
+# Create the confusion matrix and plot it
+table_gbm_train <- table(gbm_pred_sm_train, df_train_sm$Response)
+plot_conf_matrix(table_gbm_train)
+
+```
+
+```{r}
+
+# Rename the levels of the Response variable to valid R variable names
+levels(df_test$Response) <- make.names(levels(df_test_mod$Response))
+
+# Make predictions on the test data
+gbm_pred_sm_test <- predict(gbm_fit_sm, df_test_mod)
+
+levels(df_test$Response) <- c(0,1)
+
+# Create the confusion matrix and plot it
+table_gbm_test <- table(gbm_pred_sm_test, df_test_mod$Response)
+plot_conf_matrix(table_gbm_test)
+
+
+```
+
+```{r Class_Metrics_tree,echo=FALSE}
+
+tables[[length(tables)+1]] = table_gbm_test
+
+names = append(names,'Gradient Boosting Machines')
+
+Class_Metrics( tables, names )
+
+```
+
+We see that tree structures are not good enough as Logistic Regression for our project.
+
+###4.5.4 Feature analysis of the Gradient boost.
+
+```{r}
+# Get feature importance
+feature_importance <- summary(gbm_fit_sm, n.trees = 300, plot = FALSE)
+print(feature_importance)
+```
+
+```{r}
+# Create a data frame for feature importance
+feature_importance_df <- data.frame(
+  Feature = row.names(feature_importance),
+  Importance = feature_importance$rel.inf
+)
+
+# Plot feature importance
+ggplot(feature_importance_df, aes(x = reorder(Feature, Importance), y = Importance)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  xlab("Feature") +
+  ylab("Relative Importance") +
+  ggtitle("Feature Importance for GBM Model") +
+  theme_minimal()
+```
+
+Here we see that again, Recency, amount of gold, meat and wines, income and Year were again the most influential features. 
+
+Are one of the best features in determining the if a customer will respond to our offer.
+As we saw in the EDA phase, more Recent Customers, have responded more to our offer which propably attributes to this results.
+
+We will not focus on these anymore.
